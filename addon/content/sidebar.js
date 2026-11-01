@@ -95,10 +95,12 @@ var ZotRecallSidebar = {
 		}
 		let view = doc.getElementById('zotrecall-sidebar-view');
 		if (!view) {
-			view = this.ui.h(doc, 'div', { id: 'zotrecall-sidebar-view', class: 'viewWrapper preview-popup', role: 'tabpanel' });
-			view.addEventListener('pointerdown', e => e.stopPropagation());
+			view = this.ui.h(doc, 'div', { id: 'zotrecall-sidebar-view', class: 'viewWrapper', role: 'tabpanel' });
 			content.append(view);
 			if (state.active) this.render(doc);
+		}
+		else {
+			view.classList.remove('preview-popup');
 		}
 		if (state.active) {
 			container.classList.add('zr-mode');
@@ -1005,7 +1007,7 @@ var ZotRecallSidebar = {
 		style.textContent = `
 #sidebarContainer.zr-mode #sidebarContent > .viewWrapper:not(#zotrecall-sidebar-view) { display: none !important; }
 #sidebarContainer.zr-mode .sidebar-toolbar .end > * { display: none !important; }
-#zotrecall-sidebar-view { display: none; width: 100%; height: 100%; flex-direction: column; user-select: none; }
+#zotrecall-sidebar-view { display: none; width: 100%; height: 100%; max-width: none; max-height: none; flex: 1 1 auto; flex-direction: column; user-select: none; box-sizing: border-box; }
 #sidebarContainer.zr-mode #zotrecall-sidebar-view { display: flex; }
 #zotrecall-sidebar-tab svg { pointer-events: none; }
 .zr-sb-head { padding: 4px 8px 8px; border-bottom: var(--material-panedivider, 1px solid var(--fill-quinary)); display: flex; flex-direction: column; gap: 6px; }
