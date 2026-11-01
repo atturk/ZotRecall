@@ -8,6 +8,7 @@
 	"applications": {
 		"zotero": {
 			"id": "zotrecall@atturk.github.io",
+			"update_url": "https://raw.githubusercontent.com/atturk/ZotRecall/main/updates.json",
 			"strict_min_version": "10.0",
 			"strict_max_version": "10.*"
 		}
