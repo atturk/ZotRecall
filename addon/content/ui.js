@@ -197,6 +197,10 @@ var ZotRecallUI = {
 				return;
 			}
 			try {
+				ZotRecallSidebar.ensure(reader, doc);
+			}
+			catch (e) {}
+			try {
 				let attachment = this.app.getAttachment(reader);
 				if (!attachment || !attachment.isPDFAttachment()) {
 					badge.hidden = true;
@@ -308,14 +312,14 @@ var ZotRecallUI = {
 					sub: `Pagina ${page + 1} · evidenziazioni`,
 					count: onPage,
 					disabled: !onPage,
-					onclick: () => this.startGeneration(reader, doc, popup, page),
+					onclick: () => this.startGeneration(reader, doc, popup, { pageIndex: page }),
 				}),
 				this.action(doc, {
 					label: 'Genera carte di tutto il documento',
 					sub: 'Solo i periodi senza carta, salvo tua scelta',
 					count: all.length,
 					disabled: !all.length,
-					onclick: () => this.startGeneration(reader, doc, popup, null),
+					onclick: () => this.startGeneration(reader, doc, popup, {}),
 				}),
 				this.action(doc, {
 					label: 'Anteprima carte',
@@ -330,11 +334,20 @@ var ZotRecallUI = {
 					disabled: !active,
 					onclick: () => this.showExport(reader, doc, popup),
 				}),
-				this.action(doc, {
-					label: 'Mostra i periodi estratti di questa pagina',
-					sub: 'Verifica cosa riceverà il modello',
-					onclick: () => this.showExtracted(reader, doc, popup, page),
-				}),
+				doc.getElementById('zotrecall-sidebar-tab')
+					? this.action(doc, {
+						label: 'Rivedi i periodi nella barra laterale',
+						sub: 'Unisci, separa o escludi i periodi prima di generare',
+						onclick: () => {
+							popup._zrClose();
+							ZotRecallSidebar.activate(doc);
+						},
+					})
+					: this.action(doc, {
+						label: 'Mostra i periodi estratti di questa pagina',
+						sub: 'Verifica cosa riceverà il modello',
+						onclick: () => this.showExtracted(reader, doc, popup, page),
+					}),
 				...notes,
 			);
 		};
@@ -395,44 +408,66 @@ var ZotRecallUI = {
 	// Generation
 	// ------------------------------------------------------------------
 
-	async startGeneration(reader, doc, popup, pageIndex) {
+	/**
+	 * Confirmation step before sending anything to the model.
+	 * @param {Object} scope {pageIndex} for one page, {keys, label} for a selection, {} for the whole document
+	 */
+	async startGeneration(reader, doc, popup, scope = {}) {
 		let h = this.h.bind(this);
-		let scope = pageIndex === null ? 'tutto il documento' : `pagina ${pageIndex + 1}`;
+		let label = scope.label
+			|| (scope.pageIndex !== undefined && scope.pageIndex !== null ? `pagina ${scope.pageIndex + 1}` : 'tutto il documento');
 		let body = h(doc, 'div', { class: 'zr-body' }, h(doc, 'p', { class: 'zr-note', text: 'Analisi delle evidenziazioni…' }));
 		let back = () => this.showMain(reader, doc, popup);
-		this.setView(popup, this.header(doc, popup, 'Genera carte · ' + scope, { onBack: back }), body);
+		this.setView(popup, this.header(doc, popup, 'Genera carte · ' + label, { onBack: back }), body);
 		let attachment = this.app.getAttachment(reader);
-		let analysis;
+		let base;
 		try {
-			analysis = await this.app.analyze(attachment, pageIndex);
+			base = await this.app.plan(attachment, scope);
 		}
 		catch (e) {
 			Zotero.logError(e);
 			body.replaceChildren(h(doc, 'p', { class: 'zr-error', text: e.message || String(e) }));
 			return;
 		}
-		let { cls, unmatched } = analysis;
-		let fresh = cls.fresh.length;
-		let changed = cls.changed.length;
-		let discarded = cls.discarded.length;
+		let inScope = scope.keys ? new Set(scope.keys)
+			: (scope.pageIndex !== undefined && scope.pageIndex !== null)
+				? new Set(base.sentences.filter(s => s.pageIndex === scope.pageIndex).map(s => s.key))
+				: null;
+		let sentences = inScope ? base.sentences.filter(s => inScope.has(s.key)) : base.sentences;
+		let cls = ZotRecallCore.classify(sentences, base.store);
+		let excluded = new Set(ZotRecallCore.ensureReview(base.store).excluded);
+		let notExcluded = list => list.filter(s => !excluded.has(s.key)).length;
+		let changed = notExcluded(cls.changed);
+		let discarded = notExcluded(cls.discarded);
+		let excludedCount = sentences.filter(s => excluded.has(s.key)).length;
 
 		let changedBox = h(doc, 'input', { type: 'checkbox' });
 		let discardedBox = h(doc, 'input', { type: 'checkbox' });
-		let summary = h(doc, 'p', { class: 'zr-note', style: { marginTop: '0' } });
+		let summary = h(doc, 'p', { class: 'zr-confirm' });
 		let go = h(doc, 'button', { class: 'zr-btn zr-primary', text: 'Genera' });
-		let update = () => {
-			let n = fresh + (changedBox.checked ? changed : 0) + (discardedBox.checked ? discarded : 0);
+		let choice = () => ({ ...scope, includeChanged: changedBox.checked, includeDiscarded: discardedBox.checked });
+		let token = 0;
+		let update = async () => {
+			let my = ++token;
+			go.disabled = true;
+			let p = await this.app.plan(attachment, choice());
+			if (my !== token) return;
+			let n = p.units;
 			go.disabled = !n;
+			let merged = p.groups.reduce((m, g) => m + g.units.filter(u => u.keys.length > 1).length, 0);
 			summary.textContent = n
-				? `Verranno inviati al modello ${n} periodi.`
-				: 'Non c\'è niente da generare: tutti i periodi evidenziati hanno già una carta.';
+				? `Verranno inviati al modello ${n} ${n === 1 ? 'periodo' : 'periodi'} in ${p.groups.length} ${p.groups.length === 1 ? 'richiesta' : 'richieste'}`
+					+ (merged ? ` (${merged === 1 ? 'un periodo unito conta' : merged + ' periodi uniti contano'} come uno). ` : '. ')
+					+ `Il modello scrive da 1 a 4 domande per periodo, quindi avrai tra ${n} e ${n * 4} carte.`
+				: 'Non c\'è niente da generare: tutti i periodi evidenziati hanno già una carta o sono esclusi.';
 		};
 		changedBox.addEventListener('change', update);
 		discardedBox.addEventListener('change', update);
 
 		let rows = [
 			h(doc, 'p', { style: { margin: '0 0 10px' } },
-				`${fresh} periodi nuovi · ${cls.unchanged.length} già con carta`),
+				`${notExcluded(cls.fresh)} periodi nuovi · ${cls.unchanged.length} già con carta`
+				+ (excludedCount ? ` · ${excludedCount} esclusi` : '')),
 		];
 		if (changed) {
 			rows.push(h(doc, 'label', { class: 'zr-color-row' }, changedBox,
@@ -442,21 +477,28 @@ var ZotRecallUI = {
 			rows.push(h(doc, 'label', { class: 'zr-color-row' }, discardedBox,
 				`Rigenera anche i ${discarded} periodi delle carte scartate`));
 		}
-		if (unmatched.length) {
-			rows.push(h(doc, 'p', { class: 'zr-error', text: `${unmatched.length} evidenziazioni non sono collegate al testo e verranno ignorate.` }));
+		if (base.unmatchedCount) {
+			rows.push(h(doc, 'p', { class: 'zr-error', text: `${base.unmatchedCount} evidenziazioni non sono collegate al testo e verranno ignorate.` }));
 		}
-		go.addEventListener('click', () => this.runGeneration(reader, doc, popup, pageIndex, {
-			includeChanged: changedBox.checked,
-			includeDiscarded: discardedBox.checked,
-		}));
+		go.addEventListener('click', () => this.runGeneration(reader, doc, popup, choice()));
 		body.replaceChildren(...rows, summary,
 			h(doc, 'div', { class: 'zr-footer' }, h(doc, 'button', { class: 'zr-btn', text: 'Annulla', onclick: back }), go));
 		update();
-		// Nothing to decide: start right away
-		if (fresh && !changed && !discarded) go.click();
 	},
 
-	async runGeneration(reader, doc, popup, pageIndex, choice) {
+	/** Open the popup (if needed) straight on the confirmation step. */
+	openGeneration(reader, doc, scope) {
+		let popup = doc.getElementById('zotrecall-popup');
+		if (!popup) {
+			let btn = doc.querySelector('.zotrecall-button');
+			if (!btn) return;
+			this.togglePopup(reader, doc, btn);
+			popup = doc.getElementById('zotrecall-popup');
+		}
+		this.startGeneration(reader, doc, popup, scope);
+	},
+
+	async runGeneration(reader, doc, popup, choice) {
 		let h = this.h.bind(this);
 		let cancelled = false;
 		let bar = h(doc, 'div', { class: 'zr-bar' }, h(doc, 'div', { class: 'zr-bar-fill' }));
@@ -472,7 +514,6 @@ var ZotRecallUI = {
 		let attachment = this.app.getAttachment(reader);
 		try {
 			let res = await this.app.generate(attachment, {
-				pageIndex,
 				...choice,
 				isCancelled: () => cancelled,
 				onProgress: (done, total) => {

@@ -16,6 +16,7 @@ var ZotRecall = {
 		this.version = version;
 		this.rootURI = rootURI;
 		ZotRecallUI.init(this);
+		ZotRecallSidebar.init(this, ZotRecallUI);
 		Zotero.Reader.registerEventListener('renderToolbar', (event) => {
 			try {
 				ZotRecallUI.onRenderToolbar(event);
@@ -52,6 +53,7 @@ var ZotRecall = {
 	},
 
 	shutdown() {
+		ZotRecallSidebar.shutdown();
 		ZotRecallUI.shutdown();
 		this._sdtCache.clear();
 	},
@@ -347,6 +349,41 @@ var ZotRecall = {
 	},
 
 	/**
+	 * What a generation run would send. Merges can cross pages, so the
+	 * whole document is always read and then limited to the page or keys.
+	 * @param {Object} opts {pageIndex, keys, includeChanged, includeDiscarded}
+	 */
+	async plan(attachment, opts = {}) {
+		let { sentences, unmatched } = await this.extract(attachment, null);
+		let store = this.loadStore(attachment);
+		let keys = opts.keys || null;
+		let unmatchedCount = unmatched.length;
+		if (!opts.keys && opts.pageIndex !== undefined && opts.pageIndex !== null) {
+			unmatchedCount = (await this.extract(attachment, opts.pageIndex)).unmatched.length;
+		}
+		if (!keys && opts.pageIndex !== undefined && opts.pageIndex !== null) {
+			keys = sentences.filter(s => s.pageIndex === opts.pageIndex).map(s => s.key);
+		}
+		let groups = ZotRecallCore.planGeneration(sentences, store, {
+			includeChanged: !!opts.includeChanged,
+			includeDiscarded: !!opts.includeDiscarded,
+			keys,
+		});
+		let units = groups.reduce((n, g) => n + g.units.length, 0);
+		return { groups, store, sentences, units, unmatchedCount };
+	},
+
+	/** Change the review state (merges, exclusions) and save it. */
+	async updateReview(attachment, fn) {
+		if (!this.getParent(attachment)) throw new Error(this.NO_PARENT_MESSAGE);
+		let store = this.loadStore(attachment);
+		ZotRecallCore.ensureReview(store);
+		let changed = fn(store);
+		if (changed !== false) await this.saveStore(attachment, store);
+		return store;
+	},
+
+	/**
 	 * Generate cards.
 	 * @param {Object} opts {pageIndex, includeChanged, includeDiscarded, onProgress(done, total), isCancelled()}
 	 * @returns {Promise<{created, groups, failed: Array<{error}>, skipped, cancelled}>}
@@ -356,12 +393,7 @@ var ZotRecall = {
 		let apiKey = await this.getAPIKey();
 		if (!apiKey) throw new Error('Manca la chiave API di OpenRouter: aprila dalla rotellina in alto.');
 		let settings = this.getSettings();
-		let { sentences } = await this.extract(attachment, opts.pageIndex ?? null);
-		let store = this.loadStore(attachment);
-		let groups = ZotRecallCore.planGeneration(sentences, store, {
-			includeChanged: !!opts.includeChanged,
-			includeDiscarded: !!opts.includeDiscarded,
-		});
+		let { groups, store } = await this.plan(attachment, opts);
 		let ctx = { apiKey, settings, structured: true };
 		let total = groups.length;
 		let done = 0;

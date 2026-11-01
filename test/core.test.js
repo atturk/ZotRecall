@@ -147,7 +147,7 @@ test('prompt markup uses <hl c> tags and context', () => {
 	assert.ok(user.includes('<colors>\ngreen: definizioni\n</colors>'));
 	assert.ok(user.includes('<context>Section: Platelets'));
 	assert.ok(user.includes('<s id="s1"><hl c="green">Dense (or δ) granules</hl> contain adenosine diphosphate (ADP), see Fig. 4.5 for details.</s>'));
-	assert.equal(idMap.s1, sentences[0].key);
+	assert.deepEqual(idMap.s1, [sentences[0].key]);
 });
 
 test('generation lifecycle: fresh, unchanged, changed, discarded', () => {
@@ -215,4 +215,48 @@ test('colorName maps custom colors to the nearest palette color', () => {
 	assert.equal(Core.colorName('#ffd400'), 'yellow');
 	assert.equal(Core.colorName('#ffe066'), 'yellow');
 	assert.equal(Core.colorName('#2ea8e5'), 'blue');
+});
+
+test('review: merged sentences go to the model as one unit, excluded ones are skipped', () => {
+	let doc = makeDoc();
+	let a1 = ann('A1', P1A, 'α-Granules', 0, 50, 600);
+	let a2 = ann('A2', P1A, 'disc-shaped', 0, 50, 600);
+	let a3 = ann('A3', P1B, 'Dense (or δ) granules', 1, 50, 700);
+	let store = Core.emptyStore('X');
+	let { sentences } = Core.extractFromDocument(doc, [a1, a2, a3]);
+	assert.equal(sentences.length, 3);
+	let [s1, s2, s3] = sentences.map(s => s.key);
+
+	assert.ok(Core.mergeKeys(store, [s2, s3]));
+	let units = Core.buildUnits(sentences, store);
+	assert.equal(units.length, 2);
+	assert.deepEqual(units[1].keys, [s2, s3]);
+	assert.ok(units[1].merged);
+
+	Core.setExcluded(store, [s1], true);
+	let groups = Core.planGeneration(sentences, store);
+	assert.equal(groups.length, 1);
+	assert.equal(groups[0].units.length, 1);
+	let { messages, idMap } = Core.buildMessages(groups[0]);
+	assert.ok(messages[1].content.includes('<s id="s1" merged="true">'));
+	assert.ok(!messages[1].content.includes('<hl c="yellow">disc-shaped'), 'excluded sentence not sent');
+	assert.deepEqual(idMap.s1, [s2, s3]);
+
+	let { results } = Core.parseResponse('{"groups":[{"sentence_ids":["s1"],"questions":["Q?"]}],"skipped":[]}', idMap);
+	Core.applyResults(store, groups[0], results);
+	assert.deepEqual(Core.activeCards(store)[0].sentenceKeys, [s2, s3]);
+	assert.equal(Core.planGeneration(sentences, store).length, 0);
+
+	// Limit to a page/selection: selecting one sentence of a merge sends the whole merge
+	Core.setExcluded(store, [s1], false);
+	let limited = Core.planGeneration(sentences, store, { keys: [s1] });
+	assert.equal(limited[0].units.length, 1);
+	assert.deepEqual(limited[0].units[0].keys, [s1]);
+
+	// Splitting after generation: cards made for the merge stay; merging anew marks them changed
+	Core.splitKeys(store, [s2]);
+	assert.equal(Core.buildUnits(sentences, store).length, 3);
+	Core.mergeKeys(store, [s1, s2]);
+	let cls = Core.classify(sentences, store);
+	assert.ok(cls.changed.some(s => s.key === s2), 'new merge invalidates old cards');
 });

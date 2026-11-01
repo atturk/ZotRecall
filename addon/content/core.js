@@ -563,7 +563,91 @@ var ZotRecallCore = (function () {
 	// ------------------------------------------------------------------
 
 	function emptyStore(attachmentKey) {
-		return { version: 1, attachmentKey, sentences: {}, cards: [] };
+		return { version: 1, attachmentKey, sentences: {}, cards: [], review: { merges: [], excluded: [] } };
+	}
+
+	// ------------------------------------------------------------------
+	// Review: the user can merge sentences into one unit and exclude
+	// sentences before anything is sent to the model
+	// ------------------------------------------------------------------
+
+	function ensureReview(store) {
+		if (!store.review || typeof store.review !== 'object') store.review = {};
+		if (!Array.isArray(store.review.merges)) store.review.merges = [];
+		if (!Array.isArray(store.review.excluded)) store.review.excluded = [];
+		return store.review;
+	}
+
+	/**
+	 * Group the current sentences into review units, in document order.
+	 * A unit is a single sentence or a user-made merge of several.
+	 * @returns {Array<{id, keys, sentences, excluded, merged}>}
+	 */
+	function buildUnits(sentences, store) {
+		let review = ensureReview(store);
+		let present = new Set(sentences.map(s => s.key));
+		let mergeOf = new Map();
+		for (let m of review.merges) {
+			let keys = m.filter(k => present.has(k));
+			if (keys.length < 2) continue;
+			for (let k of keys) mergeOf.set(k, m);
+		}
+		let excluded = new Set(review.excluded);
+		let units = [];
+		let byMerge = new Map();
+		for (let s of sentences) {
+			let m = mergeOf.get(s.key);
+			if (m) {
+				let unit = byMerge.get(m);
+				if (unit) {
+					unit.keys.push(s.key);
+					unit.sentences.push(s);
+					continue;
+				}
+				unit = { id: 'm:' + s.key, keys: [s.key], sentences: [s], merged: true };
+				byMerge.set(m, unit);
+				units.push(unit);
+			}
+			else {
+				units.push({ id: s.key, keys: [s.key], sentences: [s], merged: false });
+			}
+		}
+		for (let u of units) u.excluded = u.keys.some(k => excluded.has(k));
+		return units;
+	}
+
+	/** Merge the given sentence keys (and any merge they already belong to) into one unit. */
+	function mergeKeys(store, keys) {
+		let review = ensureReview(store);
+		let all = new Set(keys);
+		let rest = [];
+		for (let m of review.merges) {
+			if (m.some(k => all.has(k))) m.forEach(k => all.add(k));
+			else rest.push(m);
+		}
+		if (all.size < 2) return false;
+		rest.push(Array.from(all));
+		review.merges = rest;
+		return true;
+	}
+
+	/** Undo the merges that contain any of the given keys. */
+	function splitKeys(store, keys) {
+		let review = ensureReview(store);
+		let set = new Set(keys);
+		let before = review.merges.length;
+		review.merges = review.merges.filter(m => !m.some(k => set.has(k)));
+		return review.merges.length !== before;
+	}
+
+	function setExcluded(store, keys, excluded) {
+		let review = ensureReview(store);
+		let set = new Set(review.excluded);
+		for (let k of keys) {
+			if (excluded) set.add(k);
+			else set.delete(k);
+		}
+		review.excluded = Array.from(set);
 	}
 
 	function newCardID() {
@@ -584,6 +668,13 @@ var ZotRecallCore = (function () {
 		// so all sentences of a merged card are regenerated together
 		let cardChanged = c => c.sentenceKeys.some(k => current.has(k)
 			&& (!c.fingerprints || c.fingerprints[k] !== current.get(k)));
+		// A sentence the user merged after its cards were made counts as changed
+		let unitOf = new Map();
+		for (let u of buildUnits(sentences, store)) {
+			if (u.merged) u.keys.forEach(k => unitOf.set(k, u.keys));
+		}
+		let mergeChanged = (c, key) => unitOf.has(key)
+			&& !unitOf.get(key).every(k => c.sentenceKeys.includes(k));
 		for (let s of sentences) {
 			let cards = store.cards.filter(c => c.sentenceKeys.includes(s.key));
 			let active = cards.filter(c => c.status === 'active');
@@ -591,7 +682,7 @@ var ZotRecallCore = (function () {
 				out.fresh.push(s);
 			}
 			else if (active.length) {
-				let changed = active.some(cardChanged);
+				let changed = active.some(c => cardChanged(c) || mergeChanged(c, s.key));
 				(changed ? out.changed : out.unchanged).push(s);
 			}
 			else {
@@ -602,26 +693,35 @@ var ZotRecallCore = (function () {
 	}
 
 	/**
-	 * Decide which sentences to send to the LLM, grouped by paragraph.
-	 * @returns {Array<{paragraphId, section, opening, sentences}>}
+	 * Decide what to send to the LLM, grouped by paragraph. Excluded sentences
+	 * are skipped; a merged unit is sent whole when any of its sentences is
+	 * selected, in the paragraph of its first sentence.
+	 * @param {Object} opts includeChanged, includeDiscarded, keys (limit to these sentence keys)
+	 * @returns {Array<{paragraphId, section, opening, units, sentences}>}
 	 */
-	function planGeneration(sentences, store, { includeChanged = false, includeDiscarded = false } = {}) {
+	function planGeneration(sentences, store, { includeChanged = false, includeDiscarded = false, keys = null } = {}) {
 		let cls = classify(sentences, store);
 		let selected = new Set(cls.fresh.map(s => s.key));
 		if (includeChanged) cls.changed.forEach(s => selected.add(s.key));
 		if (includeDiscarded) cls.discarded.forEach(s => selected.add(s.key));
+		let limit = keys ? new Set(keys) : null;
 		let groups = new Map();
-		for (let s of sentences) {
-			if (!selected.has(s.key)) continue;
-			if (!groups.has(s.paragraphId)) {
-				groups.set(s.paragraphId, {
-					paragraphId: s.paragraphId,
-					section: s.section,
-					opening: s.opening,
+		for (let unit of buildUnits(sentences, store)) {
+			if (unit.excluded) continue;
+			if (!unit.keys.some(k => selected.has(k) && (!limit || limit.has(k)))) continue;
+			let first = unit.sentences[0];
+			if (!groups.has(first.paragraphId)) {
+				groups.set(first.paragraphId, {
+					paragraphId: first.paragraphId,
+					section: first.section,
+					opening: first.opening,
+					units: [],
 					sentences: [],
 				});
 			}
-			groups.get(s.paragraphId).sentences.push(s);
+			let g = groups.get(first.paragraphId);
+			g.units.push(unit);
+			g.sentences.push(...unit.sentences);
 		}
 		return Array.from(groups.values());
 	}
@@ -779,6 +879,7 @@ var ZotRecallCore = (function () {
 INPUT
 - <context>: the section title and the opening sentence of the paragraph. Use it ONLY to understand what the passage is about. Never ask about content that appears only in <context>.
 - <passage>: one or more sentences, each wrapped in <s id="...">. Highlighted spans are marked <hl c="color">...</hl>. The highlights are what the student wants to remember; the rest of the sentence is supporting text.
+- An <s merged="true"> holds several consecutive sentences that the student joined on purpose because they form one idea: treat it as a single unit and ask about it as a whole.
 - <colors> (optional): what each highlight color means to the student.
 
 TASK
@@ -803,6 +904,14 @@ Return only JSON: {"groups":[{"sentence_ids":["..."],"questions":["..."]}],"skip
 		return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 	}
 
+	/** A merged unit becomes one <s> holding all its sentences. */
+	function unitToMarkup(unit, id) {
+		let inner = unit.sentences.map(s => sentenceToMarkup(s, null)).join(' ');
+		return unit.sentences.length > 1
+			? `<s id="${id}" merged="true">${inner}</s>`
+			: `<s id="${id}">${inner}</s>`;
+	}
+
 	function sentenceToMarkup(sentence, id) {
 		let out = '';
 		let pos = 0;
@@ -814,7 +923,7 @@ Return only JSON: {"groups":[{"sentence_ids":["..."],"questions":["..."]}],"skip
 			pos = s.end;
 		}
 		out += escapeXMLText(sentence.text.slice(pos));
-		return `<s id="${id}">${out}</s>`;
+		return id ? `<s id="${id}">${out}</s>` : out;
 	}
 
 	/**
@@ -842,10 +951,11 @@ Return only JSON: {"groups":[{"sentence_ids":["..."],"questions":["..."]}],"skip
 			lines.push('<context>' + escapeXMLText(ctx.join('\n')) + '</context>');
 		}
 		lines.push('<passage>');
-		group.sentences.forEach((s, i) => {
+		let units = group.units || group.sentences.map(s => ({ keys: [s.key], sentences: [s] }));
+		units.forEach((u, i) => {
 			let id = 's' + (i + 1);
-			idMap[id] = s.key;
-			lines.push(sentenceToMarkup(s, id));
+			idMap[id] = u.keys.slice();
+			lines.push(unitToMarkup(u, id));
 		});
 		lines.push('</passage>');
 		return {
@@ -895,7 +1005,7 @@ Return only JSON: {"groups":[{"sentence_ids":["..."],"questions":["..."]}],"skip
 		let results = [];
 		for (let g of groups) {
 			let ids = Array.isArray(g.sentence_ids) ? g.sentence_ids : [];
-			let sentenceKeys = [...new Set(ids.map(id => idMap[String(id).trim()]).filter(Boolean))];
+			let sentenceKeys = [...new Set(ids.flatMap(id => [].concat(idMap[String(id).trim()] || [])))];
 			let questions = (Array.isArray(g.questions) ? g.questions : [])
 				.map(q => String(q).trim())
 				.filter(Boolean)
@@ -903,8 +1013,7 @@ Return only JSON: {"groups":[{"sentence_ids":["..."],"questions":["..."]}],"skip
 			if (sentenceKeys.length && questions.length) results.push({ sentenceKeys, questions });
 		}
 		let skipped = (Array.isArray(data.skipped) ? data.skipped : [])
-			.map(id => idMap[String(id).trim()])
-			.filter(Boolean);
+			.flatMap(id => [].concat(idMap[String(id).trim()] || []));
 		return { results, skipped };
 	}
 
@@ -981,6 +1090,11 @@ Return only JSON: {"groups":[{"sentence_ids":["..."],"questions":["..."]}],"skip
 		extractFromDocument,
 		emptyStore,
 		classify,
+		ensureReview,
+		buildUnits,
+		mergeKeys,
+		splitKeys,
+		setExcluded,
 		planGeneration,
 		applyResults,
 		activeCards,
