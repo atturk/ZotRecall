@@ -242,7 +242,8 @@ var ZotRecallSidebar = {
 			let n = unitCards.length;
 			let firstUnsent = unitCards.find(c => unsentIDs.has(c.id));
 			let cardID = (firstUnsent || unitCards[0])?.id || null;
-			let el = this.unitNode(doc, u, status, n, cardID);
+			let cardIDs = unitCards.map(c => c.id);
+			let el = this.unitNode(doc, u, status, n, cardID, cardIDs);
 			if (firstOnPage === null && u.sentences.some(s => s.pageIndex >= page)) firstOnPage = el;
 			list.append(el);
 		}
@@ -343,7 +344,7 @@ var ZotRecallSidebar = {
 		return { kind: 'new', label: 'Da generare' };
 	},
 
-	unitNode(doc, u, status, cards, cardID) {
+	unitNode(doc, u, status, cards, cardID, cardIDs = []) {
 		let h = this.ui.h.bind(this.ui);
 		let state = this._states.get(doc);
 		let pages = [...new Set(u.sentences.map(s => s.pageIndex + 1))];
@@ -405,7 +406,7 @@ var ZotRecallSidebar = {
 						title: 'Apri le carte di questo periodo nell\'anteprima',
 						onclick: (e) => {
 							e.stopPropagation();
-							this.ui.open(state.reader, 'preview', { sentenceKeys: u.keys, cardID });
+							this.ui.open(state.reader, 'preview', { cardIDs, sentenceKeys: u.keys, cardID });
 						},
 					}, status.kind === 'done' && cards ? `${cards} ${cards === 1 ? 'carta' : 'carte'}` : status.label)
 					: h(doc, 'span', {
