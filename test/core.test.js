@@ -1,0 +1,218 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const Core = require('../addon/content/core.js');
+
+// Build an SDT text node: every non-whitespace char gets a 5pt-wide box on one line
+function textNode(text, pageIndex, x, y, style) {
+	let widths = [];
+	let pendingGap = 0;
+	let started = false;
+	let startX = x;
+	for (let ch of text) {
+		if (/\s/.test(ch)) {
+			pendingGap += 3;
+			continue;
+		}
+		if (!started) {
+			startX = x + pendingGap;
+			pendingGap = 0;
+			started = true;
+			widths.push(5);
+			continue;
+		}
+		widths.push(pendingGap ? [pendingGap, 5] : 5);
+		pendingGap = 0;
+	}
+	let total = widths.reduce((s, w) => s + (Array.isArray(w) ? w[0] + w[1] : w), 0);
+	let node = { text, anchor: { textMap: JSON.stringify([[0, pageIndex, startX, y, startX + total, y + 10, ...widths]]) } };
+	if (style) node.style = style;
+	return node;
+}
+
+// Rect covering characters [from, to) of a textNode laid out by textNode()
+function rectFor(text, from, to, x, y) {
+	let pos = x;
+	let x1 = null;
+	let x2 = null;
+	let started = false;
+	let gap = 0;
+	for (let i = 0; i < text.length; i++) {
+		let ch = text[i];
+		if (/\s/.test(ch)) {
+			gap += 3;
+			continue;
+		}
+		if (started) pos += gap;
+		else pos += gap;
+		gap = 0;
+		started = true;
+		if (i >= from && i < to) {
+			if (x1 === null) x1 = pos;
+			x2 = pos + 5;
+		}
+		pos += 5;
+	}
+	return [x1, y, x2, y + 10];
+}
+
+const P1A = 'Platelets are disc-shaped anucleate cell fragments. α-Granules have the adhesion molecule P-selectin on their membranes (Chapter 3)';
+const P1B = 'and contain proteins involved in coagulation, such as fibrinogen. Dense (or δ) granules contain adenosine diphosphate (ADP), see Fig. 4.5 for details.';
+
+function makeDoc() {
+	return {
+		schemaVersion: '1.0.0',
+		catalog: { pages: [], outline: [] },
+		content: [
+			{ type: 'heading', anchor: {}, content: [textNode('Platelets', 0, 50, 700)] },
+			{ type: 'paragraph', anchor: {}, nextPart: [3], content: [textNode(P1A, 0, 50, 600)] },
+			{ type: 'paragraph', flowClass: 'excluded', anchor: {}, content: [textNode('120 CHAPTER 4 Hemodynamic Disorders', 1, 50, 780)] },
+			{ type: 'paragraph', anchor: {}, previousPart: [1], content: [textNode(P1B, 1, 50, 700)] },
+		],
+	};
+}
+
+function ann(key, text, needle, pageIndex, x, y, color = '#ffd400', sortIndex = '00000|000000|00000') {
+	let from = text.indexOf(needle);
+	assert.ok(from >= 0, 'needle not found: ' + needle);
+	return {
+		key,
+		type: 'highlight',
+		color,
+		sortIndex,
+		text: needle,
+		position: JSON.stringify({ pageIndex, rects: [rectFor(text, from, from + needle.length, x, y)] }),
+	};
+}
+
+test('decodeTextMap returns one rect per non-whitespace char', () => {
+	let n = textNode('ab c', 2, 10, 20);
+	let chars = Core.decodeTextMap(n.anchor.textMap);
+	assert.equal(chars.length, 3);
+	assert.equal(chars[0].pageIndex, 2);
+	assert.deepEqual(chars[0].rect, [10, 20, 15, 30]);
+	assert.deepEqual(chars[2].rect, [23, 20, 28, 30]);
+});
+
+test('flattenDocument joins parts across pages, drops excluded blocks, tracks section', () => {
+	let paras = Core.flattenDocument(makeDoc());
+	assert.equal(paras.length, 1);
+	assert.equal(paras[0].section, 'Platelets');
+	assert.ok(paras[0].text.includes('(Chapter 3) and contain proteins'));
+	assert.ok(!paras[0].text.includes('CHAPTER 4'));
+	assert.equal(paras[0].pageIndex, 0);
+});
+
+test('segmentSentences keeps "Fig. 4.5" inside one sentence', () => {
+	let t = 'Dense granules contain ADP, see Fig. 4.5 for details. Next one e.g. here. Last.';
+	let s = Core.segmentSentences(t).map(r => t.slice(r.start, r.end));
+	assert.deepEqual(s, ['Dense granules contain ADP, see Fig. 4.5 for details.', 'Next one e.g. here.', 'Last.']);
+});
+
+test('extractFromDocument: whole sentence across page break, highlight spans and colors', () => {
+	let doc = makeDoc();
+	let anns = [
+		ann('A1', P1A, 'α-Granules', 0, 50, 600),
+		ann('A2', P1A, 'adhesion molecule P-selectin', 0, 50, 600),
+		ann('A3', P1B, 'Dense (or δ) granules', 1, 50, 700, '#5fb236'),
+		ann('A4', P1B, '(ADP)', 1, 50, 700),
+	];
+	let { sentences, unmatched } = Core.extractFromDocument(doc, anns);
+	assert.deepEqual(unmatched, []);
+	assert.equal(sentences.length, 2);
+
+	let [s1, s2] = sentences;
+	assert.equal(s1.text, 'α-Granules have the adhesion molecule P-selectin on their membranes (Chapter 3) and contain proteins involved in coagulation, such as fibrinogen.');
+	assert.equal(s1.pageIndex, 0);
+	assert.equal(s1.section, 'Platelets');
+	assert.equal(s1.opening, 'Platelets are disc-shaped anucleate cell fragments.');
+	assert.deepEqual(s1.spans.map(s => s1.text.slice(s.start, s.end)), ['α-Granules', 'adhesion molecule P-selectin']);
+
+	assert.equal(s2.pageIndex, 1);
+	assert.deepEqual(s2.spans.map(s => [s2.text.slice(s.start, s.end), s.color]), [
+		['Dense (or δ) granules', '#5fb236'],
+		['(ADP)', '#ffd400'],
+	]);
+	assert.equal(s1.paragraphId, s2.paragraphId);
+});
+
+test('prompt markup uses <hl c> tags and context', () => {
+	let { sentences } = Core.extractFromDocument(makeDoc(), [
+		ann('A3', P1B, 'Dense (or δ) granules', 1, 50, 700, '#5fb236'),
+	]);
+	let [group] = Core.planGeneration(sentences, Core.emptyStore('X'));
+	let { messages, idMap } = Core.buildMessages(group, { language: 'Italiano', colorMeanings: { green: 'definizioni', red: '' } });
+	assert.ok(messages[0].content.includes('Write the questions in Italiano'));
+	let user = messages[1].content;
+	assert.ok(user.includes('<colors>\ngreen: definizioni\n</colors>'));
+	assert.ok(user.includes('<context>Section: Platelets'));
+	assert.ok(user.includes('<s id="s1"><hl c="green">Dense (or δ) granules</hl> contain adenosine diphosphate (ADP), see Fig. 4.5 for details.</s>'));
+	assert.equal(idMap.s1, sentences[0].key);
+});
+
+test('generation lifecycle: fresh, unchanged, changed, discarded', () => {
+	let doc = makeDoc();
+	let a1 = ann('A1', P1A, 'α-Granules', 0, 50, 600);
+	let a3 = ann('A3', P1B, 'Dense (or δ) granules', 1, 50, 700);
+	let store = Core.emptyStore('X');
+
+	let { sentences } = Core.extractFromDocument(doc, [a1, a3]);
+	let groups = Core.planGeneration(sentences, store);
+	assert.equal(groups.length, 1);
+	assert.equal(groups[0].sentences.length, 2);
+
+	let { idMap } = Core.buildMessages(groups[0]);
+	let reply = '```json\n{"groups":[{"sentence_ids":["s1","s2"],"questions":["Which two types of granules do platelets contain?","Which adhesion molecule is on platelet alpha-granule membranes?"]}],"skipped":[]}\n```';
+	let { results } = Core.parseResponse(reply, idMap);
+	Core.applyResults(store, groups[0], results, { model: 'test' });
+	assert.equal(Core.activeCards(store).length, 2, 'one card per question');
+	assert.deepEqual(Core.activeCards(store)[0].sentenceKeys, sentences.map(s => s.key));
+
+	// Nothing to do on the second run
+	assert.equal(Core.planGeneration(sentences, store).length, 0);
+
+	// Change the highlight in sentence 2 -> changed
+	let a4 = ann('A4', P1B, '(ADP)', 1, 50, 700);
+	let again = Core.extractFromDocument(doc, [a1, a3, a4]).sentences;
+	let cls = Core.classify(again, store);
+	assert.equal(cls.changed.length, 2, 'both sentences share the merged card');
+	assert.equal(Core.planGeneration(again, store).length, 0);
+	assert.equal(Core.planGeneration(again, store, { includeChanged: true })[0].sentences.length, 2);
+
+	// Discard both cards -> discarded
+	for (let c of Core.activeCards(store)) Core.setCardStatus(store, c.id, 'discarded');
+	cls = Core.classify(sentences, store);
+	assert.equal(cls.discarded.length, 2);
+	assert.equal(Core.planGeneration(sentences, store).length, 0);
+	assert.equal(Core.planGeneration(sentences, store, { includeDiscarded: true }).length, 1);
+
+	Core.emptyTrash(store);
+	assert.equal(store.cards.length, 0);
+	assert.deepEqual(store.sentences, {});
+});
+
+test('back HTML keeps original highlight colors; CSV has two columns, no header', () => {
+	let { sentences } = Core.extractFromDocument(makeDoc(), [ann('A4', P1B, '(ADP)', 1, 50, 700, '#ff6666')]);
+	let store = Core.emptyStore('X');
+	let [group] = Core.planGeneration(sentences, store);
+	Core.applyResults(store, group, [{ sentenceKeys: [sentences[0].key], questions: ['What does "ADP" stand for?'] }]);
+	let card = Core.activeCards(store)[0];
+	assert.ok(Core.backHTML(store, card).includes('<span style="background-color:#ff6666">(ADP)</span>'));
+	let csv = Core.toCSV(store);
+	assert.equal(csv.split('\r\n').filter(Boolean).length, 1);
+	assert.ok(csv.startsWith('"What does &quot;ADP&quot; stand for?","Dense (or δ) granules contain'));
+});
+
+test('note round trip', () => {
+	let store = Core.emptyStore('KEY');
+	store.cards.push({ id: 'c1', sentenceKeys: [], question: 'Q àè?', status: 'active', pageIndex: 0, createdAt: 'x' });
+	let html = Core.storeToNoteHTML(store, 'Robbins');
+	assert.ok(Core.isStoreNote(html));
+	assert.deepEqual(Core.storeFromNoteHTML(html), store);
+});
+
+test('colorName maps custom colors to the nearest palette color', () => {
+	assert.equal(Core.colorName('#ffd400'), 'yellow');
+	assert.equal(Core.colorName('#ffe066'), 'yellow');
+	assert.equal(Core.colorName('#2ea8e5'), 'blue');
+});
