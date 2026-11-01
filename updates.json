@@ -1,0 +1,19 @@
+{
+	"addons": {
+		"zotrecall@atturk.github.io": {
+			"updates": [
+				{
+					"version": "0.4.2",
+					"update_link": "https://raw.githubusercontent.com/atturk/ZotRecall/releases/zotrecall-0.4.2.xpi",
+					"update_hash": "sha256:8c323f8154325e1dc9f2daed4c72b6723370a2f32410e639cd643d538346c0ac",
+					"applications": {
+						"zotero": {
+							"strict_min_version": "10.0",
+							"strict_max_version": "10.*"
+						}
+					}
+				}
+			]
+		}
+	}
+}
