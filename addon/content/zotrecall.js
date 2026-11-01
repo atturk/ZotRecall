@@ -206,6 +206,177 @@ var ZotRecall = {
 	},
 
 	// ------------------------------------------------------------------
+	// Card store (one child note per attachment)
+	// ------------------------------------------------------------------
+
+	getParent(attachment) {
+		return attachment.parentItem || null;
+	},
+
+	findStoreNote(attachment) {
+		let parent = this.getParent(attachment);
+		if (!parent) return null;
+		for (let id of parent.getNotes()) {
+			let note = Zotero.Items.get(id);
+			let html = note.getNote();
+			if (!ZotRecallCore.isStoreNote(html)) continue;
+			let store = ZotRecallCore.storeFromNoteHTML(html);
+			if (store && store.attachmentKey === attachment.key) return { note, store };
+		}
+		return null;
+	},
+
+	loadStore(attachment) {
+		let found = this.findStoreNote(attachment);
+		return found ? found.store : ZotRecallCore.emptyStore(attachment.key);
+	},
+
+	async saveStore(attachment, store) {
+		let parent = this.getParent(attachment);
+		if (!parent) throw new Error(this.NO_PARENT_MESSAGE);
+		let title = parent.getDisplayTitle() || attachment.getDisplayTitle();
+		let html = ZotRecallCore.storeToNoteHTML(store, title);
+		let found = this.findStoreNote(attachment);
+		let note = found ? found.note : null;
+		if (!note) {
+			note = new Zotero.Item('note');
+			note.libraryID = parent.libraryID;
+			note.parentID = parent.id;
+			note.addTag('zotrecall');
+		}
+		note.setNote(html);
+		await note.saveTx();
+		return note;
+	},
+
+	NO_PARENT_MESSAGE: 'Questo PDF non ha un elemento padre, quindi ZotRecall non può salvare le carte in una nota. '
+		+ 'In Zotero, clic destro sul PDF → "Crea elemento padre…", poi riprova.',
+
+	// ------------------------------------------------------------------
+	// OpenRouter
+	// ------------------------------------------------------------------
+
+	async chat(messages, { apiKey, model, structured = true }) {
+		let body = { model, messages, temperature: 0.2 };
+		if (structured) {
+			body.response_format = {
+				type: 'json_schema',
+				json_schema: { name: 'recall_questions', strict: true, schema: ZotRecallCore.RESPONSE_SCHEMA },
+			};
+		}
+		let req = await Zotero.HTTP.request('POST', 'https://openrouter.ai/api/v1/chat/completions', {
+			body: JSON.stringify(body),
+			headers: {
+				'Content-Type': 'application/json',
+				Authorization: 'Bearer ' + apiKey,
+				'HTTP-Referer': 'https://github.com/atturk/ZotRecall',
+				'X-Title': 'ZotRecall',
+			},
+			responseType: 'json',
+			successCodes: false,
+			timeout: 180000,
+		});
+		let res = req.response;
+		if (req.status !== 200) {
+			let msg = (res && res.error && res.error.message) || ('HTTP ' + req.status);
+			let err = new Error('OpenRouter: ' + msg);
+			err.status = req.status;
+			throw err;
+		}
+		let content = res && res.choices && res.choices[0] && res.choices[0].message && res.choices[0].message.content;
+		if (!content) throw new Error('OpenRouter: risposta vuota dal modello.');
+		return content;
+	},
+
+	async generateGroup(group, ctx) {
+		let { messages, idMap } = ZotRecallCore.buildMessages(group, {
+			systemPrompt: ctx.settings.systemPrompt,
+			language: ctx.settings.language,
+			colorMeanings: ctx.settings.colorMeanings,
+		});
+		let content;
+		try {
+			content = await this.chat(messages, { apiKey: ctx.apiKey, model: ctx.settings.model, structured: ctx.structured });
+		}
+		catch (e) {
+			// Some models reject response_format: retry once with JSON requested in the prompt only
+			if (ctx.structured && e.status === 400) {
+				ctx.structured = false;
+				content = await this.chat(messages, { apiKey: ctx.apiKey, model: ctx.settings.model, structured: false });
+			}
+			else {
+				throw e;
+			}
+		}
+		return ZotRecallCore.parseResponse(content, idMap);
+	},
+
+	/**
+	 * Preview what a generation would do: counts by state.
+	 * @param {Integer|null} pageIndex - null for the whole document
+	 */
+	async analyze(attachment, pageIndex = null) {
+		let { sentences, unmatched } = await this.extract(attachment, pageIndex);
+		let store = this.loadStore(attachment);
+		let cls = ZotRecallCore.classify(sentences, store);
+		return { sentences, unmatched, store, cls };
+	},
+
+	/**
+	 * Generate cards.
+	 * @param {Object} opts {pageIndex, includeChanged, includeDiscarded, onProgress(done, total), isCancelled()}
+	 * @returns {Promise<{created, groups, failed: Array<{error}>, skipped, cancelled}>}
+	 */
+	async generate(attachment, opts = {}) {
+		if (!this.getParent(attachment)) throw new Error(this.NO_PARENT_MESSAGE);
+		let apiKey = await this.getAPIKey();
+		if (!apiKey) throw new Error('Manca la chiave API di OpenRouter: aprila dalla rotellina in alto.');
+		let settings = this.getSettings();
+		let { sentences } = await this.extract(attachment, opts.pageIndex ?? null);
+		let store = this.loadStore(attachment);
+		let groups = ZotRecallCore.planGeneration(sentences, store, {
+			includeChanged: !!opts.includeChanged,
+			includeDiscarded: !!opts.includeDiscarded,
+		});
+		let ctx = { apiKey, settings, structured: true };
+		let total = groups.length;
+		let done = 0;
+		let created = 0;
+		let skipped = 0;
+		let failed = [];
+		let cancelled = false;
+		let queue = groups.slice();
+		opts.onProgress && opts.onProgress(0, total);
+
+		let worker = async () => {
+			while (queue.length) {
+				if (opts.isCancelled && opts.isCancelled()) {
+					cancelled = true;
+					return;
+				}
+				let group = queue.shift();
+				try {
+					let { results, skipped: sk } = await this.generateGroup(group, ctx);
+					let added = ZotRecallCore.applyResults(store, group, results, { model: settings.model });
+					created += added.length;
+					skipped += sk.length;
+				}
+				catch (e) {
+					Zotero.logError(e);
+					failed.push({ error: e.message || String(e), group });
+				}
+				done++;
+				opts.onProgress && opts.onProgress(done, total);
+			}
+		};
+		await Promise.all(Array.from({ length: Math.min(settings.concurrency, Math.max(1, total)) }, worker));
+		if (created) {
+			await this.saveStore(attachment, store);
+		}
+		return { created, groups: total, failed, skipped, cancelled };
+	},
+
+	// ------------------------------------------------------------------
 	// Connection tests
 	// ------------------------------------------------------------------
 
