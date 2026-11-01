@@ -209,7 +209,14 @@ var ZotRecallSidebar = {
 		for (let k of Object.keys(cls)) sets[k] = new Set(cls[k].map(s => s.key));
 		let cardCount = new Map();
 		let firstCard = new Map();
+		let tags = ZotRecallCore.parseTags(this.app.getAnkiConfig().tags);
 		let active = ZotRecallCore.activeCards(store);
+		let unsent = ZotRecallCore.unsentCards(store, tags);
+		for (let c of unsent) {
+			for (let k of c.sentenceKeys) {
+				if (!firstCard.has(k)) firstCard.set(k, c.id);
+			}
+		}
 		for (let c of active) {
 			for (let k of c.sentenceKeys) {
 				cardCount.set(k, (cardCount.get(k) || 0) + 1);
@@ -252,37 +259,49 @@ var ZotRecallSidebar = {
 		}
 
 		let pageUnits = units.filter(onPage).length;
+		let genPageTitle = `Genera pagina ${page + 1} — Genera le carte dei periodi di questa pagina`;
+		let genAllTitle = 'Genera tutto — Genera le carte di tutto il documento';
+		let filterTitle = state.pageFilter
+			? `Solo pagina ${page + 1} (attivo) — Clicca per mostrare i periodi di tutto il documento`
+			: 'Solo questa pagina — Mostra solo i periodi della pagina corrente';
+		let previewTitle = unsent.length
+			? `Anteprima e invio (${unsent.length} da inviare) — Controlla, modifica e invia ad Anki le carte una alla volta`
+			: 'Anteprima e invio (nessuna carta da inviare)';
 		let head = h(doc, 'div', { class: 'zr-sb-head' },
 			h(doc, 'div', { class: 'zr-sb-summary', text: this.summaryText(units.length, counts) }),
 			h(doc, 'div', { class: 'zr-sb-actions' },
 				h(doc, 'button', {
-					class: 'zr-sb-btn',
+					class: 'zr-sb-btn zr-sb-icon-btn',
 					disabled: !pageUnits,
-					title: 'Genera le carte dei periodi di questa pagina',
+					title: genPageTitle,
+					'aria-label': genPageTitle,
 					onclick: () => this.ui.openGeneration(reader, doc, { pageIndex: this.app.getCurrentPageIndex(reader) }),
-				}, `Genera pagina ${page + 1}`),
+				}, this.ui.svg(doc, this.ui.ICONS.genPage, 16)),
 				h(doc, 'button', {
-					class: 'zr-sb-btn zr-sb-primary',
+					class: 'zr-sb-btn zr-sb-icon-btn zr-sb-primary',
 					disabled: !units.length,
-					title: 'Genera le carte di tutto il documento',
+					title: genAllTitle,
+					'aria-label': genAllTitle,
 					onclick: () => this.ui.openGeneration(reader, doc, {}),
-				}, 'Genera tutto'),
+				}, this.ui.svg(doc, this.ui.ICONS.genAll, 16)),
 				h(doc, 'button', {
-					class: 'zr-sb-btn zr-sb-filter' + (state.pageFilter ? ' on' : ''),
-					title: state.pageFilter ? 'Mostra i periodi di tutto il documento' : 'Mostra solo i periodi della pagina corrente',
+					class: 'zr-sb-btn zr-sb-icon-btn zr-sb-filter' + (state.pageFilter ? ' on' : ''),
+					title: filterTitle,
+					'aria-label': filterTitle,
 					'aria-pressed': state.pageFilter ? 'true' : 'false',
 					onclick: () => {
 						state.pageFilter = !state.pageFilter;
 						state.scrolled = false;
 						this.render(doc, null, { resetScroll: true });
 					},
-				}, state.pageFilter ? `Solo pagina ${page + 1} ✕` : 'Solo questa pagina'),
+				}, this.ui.svg(doc, this.ui.ICONS.filterPage, 16)),
 				h(doc, 'button', {
-					class: 'zr-sb-btn',
-					disabled: !active.length,
-					title: 'Controlla, modifica e invia ad Anki le carte una alla volta',
+					class: 'zr-sb-btn zr-sb-icon-btn',
+					disabled: !unsent.length,
+					title: previewTitle,
+					'aria-label': previewTitle,
 					onclick: () => this.ui.open(reader, 'preview', 0),
-				}, `Anteprima e invio (${active.length})`)),
+				}, this.ui.svg(doc, this.ui.ICONS.previewSend, 16))),
 			this.selectionBar(doc, state),
 			state.error ? h(doc, 'p', { class: 'zr-sb-error', text: state.error }) : null);
 		state.error = '';
@@ -339,7 +358,11 @@ var ZotRecallSidebar = {
 			for (let sp of [...s.spans].sort((a, b) => a.start - b.start)) {
 				if (sp.start < pos) continue;
 				text.append(doc.createTextNode(s.text.slice(pos, sp.start)));
-				text.append(h(doc, 'span', { class: 'zr-sb-hl', style: { backgroundColor: sp.color }, text: s.text.slice(sp.start, sp.end) }));
+				text.append(h(doc, 'span', {
+					class: 'zr-sb-hl',
+					style: { backgroundColor: sp.color, color: ZotRecallCore.highlightTextColor(sp.color) },
+					text: s.text.slice(sp.start, sp.end),
+				}));
 				pos = sp.end;
 			}
 			text.append(doc.createTextNode(s.text.slice(pos)));
@@ -378,6 +401,7 @@ var ZotRecallSidebar = {
 			h(doc, 'div', { class: 'zr-sb-border', style: { backgroundColor: color } }),
 			text));
 
+		el.addEventListener('pointerdown', e => e.stopPropagation());
 		el.addEventListener('mousedown', e => e.stopPropagation());
 		el.addEventListener('click', (e) => {
 			if (more.contains(e.target)) return;
@@ -569,7 +593,9 @@ var ZotRecallSidebar = {
 		let idx = state.units.findIndex(u => u.id === unit.id);
 		let next = !many && state.units[idx + 1];
 		let allExcluded = units.every(u => u.excluded);
-		let menu = h(doc, 'div', { id: 'zotrecall-menu', role: 'menu' });
+		let menu = h(doc, 'div', { id: 'zotrecall-menu', class: 'preview-popup', role: 'menu' });
+		menu.addEventListener('pointerdown', e => e.stopPropagation());
+		menu.addEventListener('mousedown', e => e.stopPropagation());
 		let off = null;
 		let close = () => {
 			menu.remove();
@@ -617,9 +643,12 @@ var ZotRecallSidebar = {
 	// ------------------------------------------------------------------
 
 	injectStyle(doc) {
-		if (doc.getElementById('zotrecall-sidebar-style')) return;
-		let style = doc.createElement('style');
-		style.id = 'zotrecall-sidebar-style';
+		let style = doc.getElementById('zotrecall-sidebar-style');
+		if (!style) {
+			style = doc.createElement('style');
+			style.id = 'zotrecall-sidebar-style';
+			(doc.head || doc.documentElement).append(style);
+		}
 		style.textContent = `
 #sidebarContainer.zr-mode #sidebarContent > .viewWrapper:not(#zotrecall-sidebar-view) { display: none !important; }
 #sidebarContainer.zr-mode .sidebar-toolbar .end > * { display: none !important; }
@@ -635,6 +664,9 @@ var ZotRecallSidebar = {
 .zr-sb-btn:hover:not(:disabled) { background: var(--fill-quinary); }
 .zr-sb-btn:disabled { opacity: .45; cursor: default; }
 .zr-sb-btn.zr-sb-primary { background: var(--accent-blue, #2f6fde); border-color: transparent; color: #fff; }
+.zr-sb-btn.zr-sb-primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent-blue, #2f6fde); }
+.zr-sb-icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; }
+.zr-sb-icon-btn svg { pointer-events: none; }
 .zr-sb-x { margin-left: auto; display: inline-flex; padding: 3px; border: 0; border-radius: 4px; background: none; color: var(--fill-secondary); cursor: pointer; }
 .zr-sb-x:hover { background: var(--fill-quinary); }
 .zr-sb-list { flex: 1; overflow: auto; padding: 7px 7px 8px; }
@@ -661,7 +693,7 @@ var ZotRecallSidebar = {
 .zr-sb-text { position: relative; color: var(--fill-secondary); }
 .zr-sb-border { position: absolute; left: 8px; top: 5px; bottom: 6px; width: 2px; }
 .zr-sb-content { padding: 4px 8px 5px 16px; line-height: 1.4; word-break: break-word; }
-.zr-sb-hl { color: #000; border-radius: 2px; }
+.zr-sb-hl { border-radius: 2px; padding: 0 2px; }
 .zr-sb-ctx { font-style: italic; opacity: .75; text-decoration: underline dotted; text-underline-offset: 3px; }
 .zr-sb-filter.on { background: var(--accent-blue10); border-color: var(--accent-blue50); }
 .zr-sb-empty, .zr-sb-note { padding: 8px; font-size: 12px; color: var(--fill-secondary); }
@@ -678,6 +710,5 @@ var ZotRecallSidebar = {
 	.zr-sb-new { color: #7fa9f7; }
 }
 `;
-		(doc.head || doc.documentElement).append(style);
 	},
 };

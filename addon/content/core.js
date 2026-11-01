@@ -26,11 +26,75 @@ var ZotRecallCore = (function () {
 		{ name: 'gray', hex: '#aaaaaa' },
 	];
 
-	function hexToRGB(hex) {
-		let m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '').trim());
-		if (!m) return null;
-		let n = parseInt(m[1], 16);
-		return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+	function hexToRGB(color) {
+		let s = String(color || '').trim();
+		let m6 = /^#?([0-9a-f]{6})(?:[0-9a-f]{2})?$/i.exec(s);
+		if (m6) {
+			let n = parseInt(m6[1], 16);
+			return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+		}
+		let m3 = /^#?([0-9a-f]{3})(?:[0-9a-f])?$/i.exec(s);
+		if (m3) {
+			let [r, g, b] = m3[1].split('').map(c => parseInt(c + c, 16));
+			return [r, g, b];
+		}
+		let mRgb = /^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})/i.exec(s);
+		if (mRgb) {
+			return [
+				Math.min(255, parseInt(mRgb[1], 10)),
+				Math.min(255, parseInt(mRgb[2], 10)),
+				Math.min(255, parseInt(mRgb[3], 10)),
+			];
+		}
+		return null;
+	}
+
+	function srgbToLinear(channel) {
+		let v = channel / 255;
+		return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+	}
+
+	function relativeLuminance([r, g, b]) {
+		return 0.2126 * srgbToLinear(r)
+			+ 0.7152 * srgbToLinear(g)
+			+ 0.0722 * srgbToLinear(b);
+	}
+
+	/**
+	 * WCAG-contrasting text color ('#000000' or '#ffffff') for a highlight
+	 * background color, so highlighted text remains legible in both light and
+	 * dark mode (Anki and Zotero) across all highlight colors.
+	 */
+	function highlightTextColor(color) {
+		let rgb = hexToRGB(color);
+		if (!rgb) return '#000000';
+		return relativeLuminance(rgb) > 0.179 ? '#000000' : '#ffffff';
+	}
+
+	function highlightStyle(color) {
+		let c = escapeHTML(color);
+		let fg = highlightTextColor(color);
+		return `background-color:${c};color:${fg};border-radius:2px;padding:0 2px`;
+	}
+
+	/**
+	 * Ensure every <span style="...background-color:..."> in an HTML snippet
+	 * carries an explicit contrasting text color, border-radius and padding.
+	 */
+	function ensureHighlightContrast(html) {
+		return String(html || '').replace(/<span\b([^>]*?)\bstyle="([^"]*)"([^>]*)>/gi, (full, before, style, after) => {
+			let m = /(?:^|;)\s*background(?:-color)?\s*:\s*([^;]+)/i.exec(style);
+			if (!m) return full;
+			let bg = m[1].trim();
+			if (!bg || bg === 'transparent' || /rgba\(.*,\s*0\s*\)/i.test(bg)) return full;
+			let fg = highlightTextColor(bg);
+			let props = style
+				.split(';')
+				.map(p => p.trim())
+				.filter(p => p && !/^(color|border-radius|padding)\s*:/i.test(p));
+			props.push(`color:${fg}`, 'border-radius:2px', 'padding:0 2px');
+			return `<span${before}style="${props.join(';')}"${after}>`;
+		});
 	}
 
 	function rgbToHSL([r, g, b]) {
@@ -917,6 +981,10 @@ var ZotRecallCore = (function () {
 		return activeCards(store).filter(c => c.ankiNoteId);
 	}
 
+	function unsentCards(store, tags = []) {
+		return activeCards(store).filter(c => ankiState(store, c, tags) !== 'sent');
+	}
+
 	function deleteCard(store, cardID) {
 		store.cards = store.cards.filter(c => c.id !== cardID);
 		pruneSentences(store);
@@ -960,7 +1028,7 @@ var ZotRecallCore = (function () {
 		for (let s of spans) {
 			if (s.start < pos) continue;
 			html += escapeHTML(sentence.text.slice(pos, s.start));
-			html += `<span style="background-color:${escapeHTML(s.color)}">`
+			html += `<span style="${highlightStyle(s.color)}">`
 				+ escapeHTML(sentence.text.slice(s.start, s.end)) + '</span>';
 			pos = s.end;
 		}
@@ -970,7 +1038,7 @@ var ZotRecallCore = (function () {
 
 	/** Back of a card: the source sentence(s), highlights in their original colors. */
 	function backHTML(store, card) {
-		if (card.back) return card.back;
+		if (card.back) return ensureHighlightContrast(card.back);
 		return card.sentenceKeys
 			.map(k => store.sentences[k])
 			.filter(Boolean)
@@ -1208,6 +1276,9 @@ Return only JSON: {"groups":[{"sentence_ids":["..."],"questions":["..."]}],"skip
 	return {
 		ZOTERO_COLORS,
 		colorName,
+		highlightTextColor,
+		highlightStyle,
+		ensureHighlightContrast,
 		hash,
 		decodeTextMap,
 		flattenDocument,
@@ -1235,6 +1306,7 @@ Return only JSON: {"groups":[{"sentence_ids":["..."],"questions":["..."]}],"skip
 		ankiState,
 		markSent,
 		sentCards,
+		unsentCards,
 		deleteCard,
 		emptyTrash,
 		orphanKeys,

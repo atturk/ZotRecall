@@ -78,20 +78,31 @@ var ZotRecallUI = {
 		trash: ['M4 6h12', 'M8 6V4.5h4V6', 'M5.5 6l.8 10h7.4l.8-10', 'M8.5 9v4.5M11.5 9v4.5'],
 		back: ['M12 5l-5 5 5 5'],
 		close: ['M5 5l10 10M15 5L5 15'],
+		genPage: ['M5 2.5h6.5L15 6v11a.5.5 0 0 1-.5.5h-9A.5.5 0 0 1 5 17V3a.5.5 0 0 1 .5-.5z',
+			'M11.5 2.5V6H15', 'M10 8.5v5', 'M7.5 11h5'],
+		genAll: ['M7 2.5h6.5L17 6v9.5a.5.5 0 0 1-.5.5H15',
+			'M4.5 5h6.5L14.5 8.5V17a.5.5 0 0 1-.5.5H4.5A.5.5 0 0 1 4 17V5.5a.5.5 0 0 1 .5-.5z',
+			'M9.2 9.5l.6 1.8 1.8.6-1.8.6-.6 1.8-.6-1.8-1.8-.6 1.8-.6z'],
+		filterPage: ['M3 4.5h14l-5.5 6.3v4.7l-3 1.5v-6.2L3 4.5z'],
+		previewSend: ['M3.5 5.5h10a1.5 1.5 0 0 1 1.5 1.5v7a1.5 1.5 0 0 1-1.5 1.5h-10A1.5 1.5 0 0 1 2 14V7a1.5 1.5 0 0 1 1.5-1.5z',
+			'M5.5 3.5h10A1.5 1.5 0 0 1 17 5v7', 'M6 10.5h5', 'M9 8.5l2 2-2 2'],
 	},
 
 	injectStyle(doc) {
-		if (doc.getElementById('zotrecall-style')) return;
-		let style = doc.createElement('style');
-		style.id = 'zotrecall-style';
+		let style = doc.getElementById('zotrecall-style');
+		if (!style) {
+			style = doc.createElement('style');
+			style.id = 'zotrecall-style';
+			(doc.head || doc.documentElement).append(style);
+		}
 		style.textContent = `
 #zotrecall-popup {
 	--zr-bg: #ffffff; --zr-fg: #1f1f1f; --zr-muted: #6b6b6b; --zr-border: rgba(0,0,0,.12);
 	--zr-hover: rgba(0,0,0,.05); --zr-accent: #2f6fde; --zr-accent-fg: #fff; --zr-danger: #c7372f;
 	--zr-field: #fff;
-	position: fixed; z-index: 100000; min-width: 320px; min-height: 220px; max-width: calc(100vw - 8px);
-	max-height: calc(100vh - 8px); overflow: auto; resize: both; box-sizing: border-box;
-	display: flex; flex-direction: column;
+	position: fixed; z-index: 100000; min-width: 340px; min-height: 220px; max-width: calc(100vw - 8px);
+	max-height: calc(100vh - 8px); overflow: hidden; resize: both; box-sizing: border-box;
+	display: flex; flex-direction: column; user-select: text; -moz-user-select: text;
 	background: var(--zr-bg); color: var(--zr-fg); border: 1px solid var(--zr-border); border-radius: 10px;
 	box-shadow: 0 8px 28px rgba(0,0,0,.18); font: 13px/1.4 system-ui, -apple-system, sans-serif;
 }
@@ -102,14 +113,14 @@ var ZotRecallUI = {
 	}
 }
 #zotrecall-popup * { box-sizing: border-box; }
-.zr-header { display: flex; align-items: center; gap: 4px; padding: 8px 8px 8px 14px; border-bottom: 1px solid var(--zr-border); position: sticky; top: 0; background: var(--zr-bg); z-index: 1; cursor: move; user-select: none; flex: none; }
+.zr-header { display: flex; align-items: center; gap: 4px; padding: 8px 8px 8px 14px; border-bottom: 1px solid var(--zr-border); background: var(--zr-bg); z-index: 1; cursor: move; user-select: none; flex: none; }
 #zotrecall-popup.zr-dragging { opacity: .92; user-select: none; }
 .zr-header button { cursor: pointer; }
 .zr-title { flex: 1; font-weight: 600; font-size: 13px; }
 .zr-icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: 0; border-radius: 6px; background: transparent; color: var(--zr-fg); cursor: pointer; position: relative; }
 .zr-icon-btn:hover { background: var(--zr-hover); }
 .zr-icon-btn .zr-count { position: absolute; top: 0; right: 0; font-size: 9px; font-weight: 600; color: var(--zr-muted); }
-.zr-body { padding: 12px 14px 14px; flex: 1 0 auto; }
+.zr-body { padding: 12px 14px 14px; flex: 1 1 auto; min-height: 0; overflow: auto; }
 .zr-action { display: flex; width: 100%; align-items: center; gap: 10px; padding: 10px 12px; margin-bottom: 6px; border: 1px solid var(--zr-border); border-radius: 8px; background: transparent; color: var(--zr-fg); cursor: pointer; text-align: left; font: inherit; }
 .zr-action:hover:not(:disabled) { background: var(--zr-hover); }
 .zr-action:disabled { opacity: .5; cursor: default; }
@@ -138,7 +149,7 @@ var ZotRecallUI = {
 .zr-sentence { padding: 10px 0; border-bottom: 1px solid var(--zr-border); }
 .zr-sentence:last-child { border-bottom: 0; }
 .zr-sentence .zr-meta { font-size: 11px; color: var(--zr-muted); margin-bottom: 4px; }
-.zr-sentence .zr-text span { color: #000; border-radius: 2px; }
+.zr-sentence .zr-text span { border-radius: 2px; padding: 0 2px; }
 .zr-bar { height: 6px; border-radius: 3px; background: var(--zr-hover); overflow: hidden; }
 .zr-bar-fill { height: 100%; width: 0; background: var(--zr-accent); transition: width .3s; }
 .zr-meta-row { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--zr-muted); margin-bottom: 8px; }
@@ -150,8 +161,8 @@ var ZotRecallUI = {
 .zr-btn.zr-danger { color: var(--zr-danger); }
 .zr-tag { display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 8px; background: var(--zr-hover); font-size: 10px; }
 .zr-tag-warn { background: #fde8c8; color: #8a5300; }
-.zr-edit { width: 100%; min-height: 70px; padding: 6px 8px; border: 1px solid var(--zr-border); border-radius: 6px; background: var(--zr-field); color: var(--zr-fg); font: 600 14px/1.4 system-ui, sans-serif; resize: vertical; }
-.zr-card.zr-editing { cursor: default; }
+.zr-edit { display: block; width: 100%; min-width: 100%; max-width: 100%; min-height: 56px; padding: 8px 10px; border: 1px solid var(--zr-border); border-radius: 6px; background: var(--zr-field); color: var(--zr-fg); font: 600 14px/1.45 system-ui, -apple-system, sans-serif; resize: vertical; overflow-y: hidden; }
+.zr-card.zr-editing { cursor: default; padding: 12px; }
 .zr-trash-q { font-weight: 600; }
 #zotrecall-popup [hidden] { display: none !important; }
 .zr-select { width: 100%; padding: 5px 6px; border: 1px solid var(--zr-border); border-radius: 6px; background: var(--zr-field); color: var(--zr-fg); font: inherit; }
@@ -164,8 +175,8 @@ var ZotRecallUI = {
 .zr-tag-ok { background: rgba(95,178,54,.2); color: #3f8a1f; }
 .zr-edit-label { font-size: 11px; font-weight: 600; color: var(--zr-muted); margin: 0 0 4px; }
 .zr-edit-label:not(:first-child) { margin-top: 12px; }
-.zr-card.zr-editing .zr-edit { font: 600 14px/1.4 system-ui, sans-serif; min-height: 52px; }
-.zr-rich span { color: #000; border-radius: 2px; }
+.zr-card.zr-editing .zr-edit { font: 600 14px/1.45 system-ui, -apple-system, sans-serif; min-height: 56px; }
+.zr-rich span[style*="background"] { border-radius: 2px; padding: 0 2px; }
 .zr-rich-wrap { border: 1px solid var(--zr-border); border-radius: 6px; background: var(--zr-field); }
 .zr-toolbar { display: flex; align-items: center; gap: 2px; padding: 3px 4px; border-bottom: 1px solid var(--zr-border); flex-wrap: wrap; }
 .zr-tool { min-width: 24px; height: 24px; padding: 0 5px; border: 0; border-radius: 4px; background: none; color: var(--zr-fg); font: 13px/24px Georgia, serif; cursor: pointer; }
@@ -180,14 +191,11 @@ var ZotRecallUI = {
 .zr-card-back.zr-rich { line-height: 1.5; }
 .zr-input { width: 100%; padding: 6px 8px; border: 1px solid var(--zr-border); border-radius: 6px; background: var(--zr-field); color: var(--zr-fg); font: inherit; }
 .zr-combo { position: relative; }
-.zr-combo .zr-input { padding-right: 30px; }
-.zr-combo-toggle { position: absolute; right: 2px; top: 2px; bottom: 2px; width: 26px; border: 0; border-radius: 5px; background: none; color: var(--zr-muted); cursor: pointer; }
-.zr-combo-toggle:hover { background: var(--zr-hover); }
 .zr-combo-list { position: absolute; left: 0; right: 0; top: calc(100% + 2px); z-index: 5; max-height: 220px; overflow: auto; padding: 4px; border: 1px solid var(--zr-border); border-radius: 6px; background: var(--zr-bg); box-shadow: 0 6px 18px rgba(0,0,0,.2); }
 .zr-combo-list[hidden] { display: none !important; }
-.zr-combo-item { padding: 4px 8px; border-radius: 4px; cursor: default; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.zr-combo-item:hover { background: var(--zr-accent); color: var(--zr-accent-fg); }
-.zr-combo-item:hover .zr-combo-parent { color: inherit; opacity: .8; }
+.zr-combo-item { padding: 4px 8px; border-radius: 4px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.zr-combo-item:hover, .zr-combo-item.active { background: var(--zr-accent); color: var(--zr-accent-fg); }
+.zr-combo-item:hover .zr-combo-parent, .zr-combo-item.active .zr-combo-parent { color: inherit; opacity: .8; }
 .zr-combo-item.current { font-weight: 600; }
 .zr-combo-parent { color: var(--zr-muted); }
 .zr-combo-empty { padding: 4px 8px; font-size: 12px; color: var(--zr-muted); }
@@ -198,7 +206,6 @@ var ZotRecallUI = {
 .zr-sent-row .zr-meta { font-size: 11px; color: var(--zr-muted); }
 .zr-sent-row .zr-tag { margin-left: 0; }
 `;
-		(doc.head || doc.documentElement).append(style);
 	},
 
 	// ------------------------------------------------------------------
@@ -291,7 +298,7 @@ var ZotRecallUI = {
 	},
 
 	createWindow(doc) {
-		let popup = this.h(doc, 'div', { id: 'zotrecall-popup', role: 'dialog', tabindex: '-1' });
+		let popup = this.h(doc, 'div', { id: 'zotrecall-popup', class: 'preview-popup', role: 'dialog', tabindex: '-1' });
 		let win = doc.defaultView;
 		let onKey = (e) => {
 			if (!popup.isConnected) return;
@@ -320,7 +327,7 @@ var ZotRecallUI = {
 		let g = this._geometry;
 		let W = win.innerWidth;
 		let H = win.innerHeight;
-		let width = Math.min(g ? g.width : 460, W - 16);
+		let width = Math.min(g ? g.width : 540, W - 16);
 		let height = Math.min(g ? g.height : Math.round(H * 0.75), H - 16);
 		popup.style.width = width + 'px';
 		popup.style.height = height + 'px';
@@ -329,29 +336,61 @@ var ZotRecallUI = {
 		popup.style.left = Math.max(8, left) + 'px';
 		popup.style.top = Math.max(8, top) + 'px';
 
-		// Drag by the header (but not by its buttons)
-		popup.addEventListener('mousedown', (e) => {
-			let header = e.target.closest && e.target.closest('.zr-header');
-			if (!header || e.target.closest('button, input, select, textarea') || e.button !== 0) return;
-			e.preventDefault();
+		// Keep Zotero's reader FocusManager from calling preventDefault() on pointerdown
+		// inside our window (which otherwise blocks mousedown, drag and resize).
+		popup.addEventListener('pointerdown', (e) => {
+			e.stopPropagation();
+			if (e.button !== 0) return;
 			let r = popup.getBoundingClientRect();
-			let dx = e.clientX - r.left;
-			let dy = e.clientY - r.top;
+			let inResizeCorner = (r.right - e.clientX <= 20) && (r.bottom - e.clientY <= 20)
+				&& !(e.target.closest && e.target.closest('button, input, select, textarea, a, [contenteditable]'));
+			let header = !inResizeCorner && e.target.closest && e.target.closest('.zr-header');
+			if (header && e.target.closest('button, input, select, textarea, a')) header = null;
+			if (!inResizeCorner && !header) return;
+
+			e.preventDefault();
+			try {
+				popup.setPointerCapture(e.pointerId);
+			}
+			catch (err) {}
+			let startX = e.clientX;
+			let startY = e.clientY;
+			let startLeft = r.left;
+			let startTop = r.top;
+			let startW = r.width;
+			let startH = r.height;
 			let move = (ev) => {
-				popup.style.left = Math.min(Math.max(0, ev.clientX - dx), win.innerWidth - 60) + 'px';
-				popup.style.top = Math.min(Math.max(0, ev.clientY - dy), win.innerHeight - 40) + 'px';
+				if (inResizeCorner) {
+					let w = Math.min(Math.max(340, startW + (ev.clientX - startX)), win.innerWidth - startLeft - 8);
+					let h = Math.min(Math.max(220, startH + (ev.clientY - startY)), win.innerHeight - startTop - 8);
+					popup.style.width = Math.round(w) + 'px';
+					popup.style.height = Math.round(h) + 'px';
+					if (popup._zrOnResize) popup._zrOnResize();
+				}
+				else {
+					let nextLeft = Math.min(Math.max(0, startLeft + (ev.clientX - startX)), win.innerWidth - 60);
+					let nextTop = Math.min(Math.max(0, startTop + (ev.clientY - startY)), win.innerHeight - 40);
+					popup.style.left = Math.round(nextLeft) + 'px';
+					popup.style.top = Math.round(nextTop) + 'px';
+				}
 			};
-			let up = () => {
-				doc.removeEventListener('mousemove', move, true);
-				doc.removeEventListener('mouseup', up, true);
+			let up = (ev) => {
+				popup.removeEventListener('pointermove', move, true);
+				popup.removeEventListener('pointerup', up, true);
+				popup.removeEventListener('pointercancel', up, true);
+				try {
+					popup.releasePointerCapture(ev.pointerId);
+				}
+				catch (err) {}
 				popup.classList.remove('zr-dragging');
 				this.rememberGeometry(popup);
 			};
 			popup.classList.add('zr-dragging');
-			doc.addEventListener('mousemove', move, true);
-			doc.addEventListener('mouseup', up, true);
+			popup.addEventListener('pointermove', move, true);
+			popup.addEventListener('pointerup', up, true);
+			popup.addEventListener('pointercancel', up, true);
 		});
-		popup.addEventListener('mouseup', () => this.rememberGeometry(popup));
+		popup.addEventListener('pointerup', () => this.rememberGeometry(popup));
 		return popup;
 	},
 
@@ -362,7 +401,7 @@ var ZotRecallUI = {
 	},
 
 	/**
-	 * Call fn on a mousedown outside el (and outside `except`). The PDF pages
+	 * Call fn on a pointerdown outside el (and outside `except`). The PDF pages
 	 * live in nested iframes, whose events never reach the reader document,
 	 * so every iframe document and the main window are watched too.
 	 * @returns {function} remove the listeners
@@ -393,11 +432,11 @@ var ZotRecallUI = {
 			if (t && (el.contains(t) || except.some(x => x && x.contains(t)))) return;
 			fn();
 		};
-		for (let d of docs) d.addEventListener('mousedown', handler, true);
+		for (let d of docs) d.addEventListener('pointerdown', handler, true);
 		return () => {
 			for (let d of docs) {
 				try {
-					d.removeEventListener('mousedown', handler, true);
+					d.removeEventListener('pointerdown', handler, true);
 				}
 				catch (e) {}
 			}
@@ -415,6 +454,7 @@ var ZotRecallUI = {
 	setView(popup, ...nodes) {
 		popup._zrRefresh = null;
 		popup._zrKeys = null;
+		popup._zrOnResize = null;
 		popup.replaceChildren(...nodes);
 	},
 
@@ -448,6 +488,9 @@ var ZotRecallUI = {
 			let onPage = this.app.countPageHighlights(attachment, page);
 			let store = this.app.loadStore(attachment);
 			let active = ZotRecallCore.activeCards(store).length;
+			let tags = ZotRecallCore.parseTags(this.app.getAnkiConfig().tags);
+			let unsent = ZotRecallCore.unsentCards(store, tags).length;
+			let sent = ZotRecallCore.sentCards(store).length;
 			let notes = [];
 			if (!this.app.getParent(attachment)) {
 				notes.push(this.h(doc, 'p', { class: 'zr-error', text: this.app.NO_PARENT_MESSAGE }));
@@ -469,9 +512,9 @@ var ZotRecallUI = {
 				}),
 				this.action(doc, {
 					label: 'Anteprima e invio carte',
-					sub: active ? 'Controlla, modifica e invia ad Anki una carta alla volta' : 'Nessuna carta ancora',
-					count: active,
-					disabled: !active,
+					sub: unsent ? 'Controlla, modifica e invia ad Anki una carta alla volta' : (active ? 'Tutte le carte sono già state inviate ad Anki' : 'Nessuna carta ancora'),
+					count: unsent,
+					disabled: !unsent,
 					onclick: () => this.showPreview(reader, doc, popup),
 				}),
 				this.action(doc, {
@@ -491,6 +534,7 @@ var ZotRecallUI = {
 				this.action(doc, {
 					label: 'Carte inviate ad Anki',
 					sub: 'Cosa è già in Anki e cosa è cambiato da allora',
+					count: sent || undefined,
 					disabled: !active,
 					onclick: () => this.showSent(reader, doc, popup),
 				}),
@@ -518,7 +562,15 @@ var ZotRecallUI = {
 		for (let s of [...sentence.spans].sort((a, b) => a.start - b.start)) {
 			if (s.start < pos) continue;
 			text.append(doc.createTextNode(sentence.text.slice(pos, s.start)));
-			text.append(this.h(doc, 'span', { style: { backgroundColor: s.color }, text: sentence.text.slice(s.start, s.end) }));
+			text.append(this.h(doc, 'span', {
+				style: {
+					backgroundColor: s.color,
+					color: ZotRecallCore.highlightTextColor(s.color),
+					borderRadius: '2px',
+					padding: '0 2px',
+				},
+				text: sentence.text.slice(s.start, s.end),
+			}));
 			pos = s.end;
 		}
 		text.append(doc.createTextNode(sentence.text.slice(pos)));
@@ -661,13 +713,25 @@ var ZotRecallUI = {
 	/**
 	 * Review session: go through the cards, flip, edit front and back, discard,
 	 * send each one to Anki.
-	 * @param {number|{cardID}} start index or card to start from
+	 * @param {number|{cardID, fromSent}} start index or card to start from
 	 */
 	showPreview(reader, doc, popup, start = 0) {
 		let h = this.h.bind(this);
 		let attachment = this.app.getAttachment(reader);
 		let store = this.app.loadStore(attachment);
-		let cards = ZotRecallCore.activeCards(store);
+		let cfg = this.app.getAnkiConfig();
+		let tags = ZotRecallCore.parseTags(cfg.tags);
+		let fromSent = Boolean(start && typeof start === 'object' && start.fromSent);
+		let allActive = ZotRecallCore.activeCards(store);
+		let initialCards = fromSent
+			? ZotRecallCore.sentCards(store)
+			: ZotRecallCore.unsentCards(store, tags);
+		if (start && typeof start === 'object' && start.cardID && !initialCards.some(c => c.id === start.cardID)) {
+			let target = allActive.find(c => c.id === start.cardID);
+			if (target) initialCards = [target, ...initialCards];
+		}
+		let sessionIDs = new Set(initialCards.map(c => c.id));
+		let cards = initialCards;
 		let index = typeof start === 'object' && start
 			? Math.max(0, cards.findIndex(c => c.id === start.cardID))
 			: Math.max(0, Math.min(start || 0, cards.length - 1));
@@ -677,14 +741,13 @@ var ZotRecallUI = {
 		let orphans = new Set();
 		let message = h(doc, 'p', { class: 'zr-note', hidden: true });
 		let body = h(doc, 'div', { class: 'zr-body' });
-		let cfg = this.app.getAnkiConfig();
-		let tags = ZotRecallCore.parseTags(cfg.tags);
 		let deckLink = h(doc, 'button', {
 			class: 'zr-link zr-deck-link',
 			title: 'Mazzo, tipo di nota e tag usati da "Invia"',
-			onclick: () => this.showAnkiConfig(reader, doc, popup, () => this.showPreview(reader, doc, popup, { cardID: cards[index] && cards[index].id })),
+			onclick: () => this.showAnkiConfig(reader, doc, popup, () => this.showPreview(reader, doc, popup, { cardID: cards[index] && cards[index].id, fromSent })),
 		}, cfg.deck ? '→ ' + cfg.deck : 'Scegli il mazzo');
-		this.setView(popup, this.header(doc, popup, 'Anteprima e invio', { onBack: () => this.showMain(reader, doc, popup), actions: [deckLink] }), body);
+		let onBack = fromSent ? () => this.showSent(reader, doc, popup) : () => this.showMain(reader, doc, popup);
+		this.setView(popup, this.header(doc, popup, 'Anteprima e invio', { onBack, actions: [deckLink] }), body);
 
 		this.app.extract(attachment).then(({ sentences }) => {
 			orphans = new Set(ZotRecallCore.orphanKeys(store, sentences));
@@ -707,7 +770,8 @@ var ZotRecallUI = {
 		};
 		let reload = (cardID) => {
 			store = this.app.loadStore(attachment);
-			cards = ZotRecallCore.activeCards(store);
+			allActive = ZotRecallCore.activeCards(store);
+			cards = allActive.filter(c => sessionIDs.has(c.id));
 			let i = cards.findIndex(c => c.id === cardID);
 			index = i >= 0 ? i : Math.min(index, cards.length - 1);
 		};
@@ -742,7 +806,17 @@ var ZotRecallUI = {
 		let render = () => {
 			popup._zrEditing = editing;
 			if (!cards.length) {
-				body.replaceChildren(h(doc, 'p', { class: 'zr-note', text: 'Nessuna carta attiva.' }), message);
+				popup._zrOnResize = null;
+				if (allActive.length) {
+					body.replaceChildren(
+						h(doc, 'p', { class: 'zr-note', text: 'Tutte le carte attive sono già state inviate ad Anki.' }),
+						h(doc, 'div', { class: 'zr-footer' },
+							h(doc, 'button', { class: 'zr-btn', text: 'Carte inviate ad Anki…', onclick: () => this.showSent(reader, doc, popup) })),
+						message);
+				}
+				else {
+					body.replaceChildren(h(doc, 'p', { class: 'zr-note', text: 'Nessuna carta attiva.' }), message);
+				}
 				return;
 			}
 			let card = cards[index];
@@ -751,9 +825,17 @@ var ZotRecallUI = {
 			let face;
 			let editor = null;
 			let questionBox = null;
+			let fitQuestion = null;
 			if (editing) {
-				questionBox = h(doc, 'textarea', { class: 'zr-edit', rows: '2' });
+				questionBox = h(doc, 'textarea', { class: 'zr-edit', rows: '1' });
 				questionBox.value = card.question;
+				fitQuestion = () => {
+					if (!questionBox || !questionBox.isConnected) return;
+					questionBox.style.height = 'auto';
+					let sh = questionBox.scrollHeight;
+					if (sh > 0) questionBox.style.height = Math.max(56, sh + 4) + 'px';
+				};
+				questionBox.addEventListener('input', fitQuestion);
 				editor = this.richEditor(doc, ZotRecallCore.backHTML(store, card), {
 					onReset: () => ZotRecallCore.backHTML(store, Object.assign({}, card, { back: undefined })),
 				});
@@ -827,7 +909,9 @@ var ZotRecallUI = {
 						} }),
 						h(doc, 'button', { class: 'zr-btn zr-danger', text: 'Scarta', onclick: async () => {
 							ZotRecallCore.setCardStatus(store, card.id, 'discarded');
+							sessionIDs.delete(card.id);
 							cards.splice(index, 1);
+							allActive = ZotRecallCore.activeCards(store);
 							index = Math.min(index, cards.length - 1);
 							flipped = false;
 							say(card.ankiNoteId ? 'Scartata. La nota già in Anki non viene toccata.' : '');
@@ -850,8 +934,18 @@ var ZotRecallUI = {
 				actions,
 				message,
 				h(doc, 'p', { class: 'zr-note zr-center', text: `${sentCount} di ${cards.length} già in Anki · spazio gira, ← → per scorrere` }));
-			if (editing) questionBox.focus();
-			else face.focus();
+			popup._zrOnResize = fitQuestion;
+			if (editing) {
+				fitQuestion();
+				try {
+					doc.defaultView.requestAnimationFrame(fitQuestion);
+				}
+				catch (e) {}
+				questionBox.focus();
+			}
+			else {
+				face.focus();
+			}
 		};
 		popup._zrKeys = (e) => {
 			if (!cards.length || editing || ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName) || e.target.isContentEditable) return false;
@@ -893,19 +987,47 @@ var ZotRecallUI = {
 			onclick: fn,
 		}, label);
 		// Highlight by wrapping the selection: same result in every engine
+		let clearHighlightStyle = (sp) => {
+			sp.style.backgroundColor = '';
+			sp.style.color = '';
+			sp.style.borderRadius = '';
+			sp.style.padding = '';
+		};
 		let highlight = (color) => {
 			let sel = doc.getSelection();
 			if (!sel || !sel.rangeCount) return;
 			let r = sel.getRangeAt(0);
 			if (r.collapsed || !area.contains(r.commonAncestorContainer)) return;
+			let ancEl = r.commonAncestorContainer.nodeType === 1
+				? r.commonAncestorContainer
+				: r.commonAncestorContainer.parentElement;
+			let ancSpan = ancEl && ancEl.closest && ancEl.closest('span');
+			if (!color && ancSpan && area.contains(ancSpan) && ancSpan.style.backgroundColor) {
+				let afterRange = doc.createRange();
+				afterRange.setStart(r.endContainer, r.endOffset);
+				afterRange.setEndAfter(ancSpan.lastChild || ancSpan);
+				let tailFrag = afterRange.extractContents();
+				let midFrag = r.extractContents();
+				midFrag.querySelectorAll('span').forEach(clearHighlightStyle);
+				if (tailFrag.textContent) {
+					let tailSpan = ancSpan.cloneNode(false);
+					tailSpan.append(tailFrag);
+					ancSpan.after(tailSpan);
+				}
+				ancSpan.after(midFrag);
+				if (!ancSpan.textContent) ancSpan.remove();
+				area.focus();
+				return;
+			}
 			let frag = r.extractContents();
-			frag.querySelectorAll('span').forEach((sp) => {
-				sp.style.backgroundColor = '';
-			});
+			frag.querySelectorAll('span').forEach(clearHighlightStyle);
 			let node = frag;
 			if (color) {
 				node = doc.createElement('span');
 				node.style.backgroundColor = color;
+				node.style.color = ZotRecallCore.highlightTextColor(color);
+				node.style.borderRadius = '2px';
+				node.style.padding = '0 2px';
 				node.append(frag);
 			}
 			let last = node.lastChild;
@@ -942,7 +1064,7 @@ var ZotRecallUI = {
 			}, 'zr-tool-reset') : null);
 		return {
 			node: h(doc, 'div', { class: 'zr-rich-wrap' }, bar, area),
-			getHTML: () => area.innerHTML,
+			getHTML: () => ZotRecallCore.ensureHighlightContrast(area.innerHTML),
 		};
 	},
 
@@ -971,7 +1093,12 @@ var ZotRecallUI = {
 				if (tag === 'span') {
 					let st = n.style;
 					let bg = st.backgroundColor;
-					if (bg && bg !== 'transparent' && !/rgba\(.*,\s*0\)/.test(bg)) el.style.backgroundColor = bg;
+					if (bg && bg !== 'transparent' && !/rgba\(.*,\s*0\)/.test(bg)) {
+						el.style.backgroundColor = bg;
+						el.style.color = ZotRecallCore.highlightTextColor(bg);
+						el.style.borderRadius = '2px';
+						el.style.padding = '0 2px';
+					}
 					if (/bold|[6-9]00/.test(st.fontWeight)) el.style.fontWeight = 'bold';
 					if (st.fontStyle === 'italic') el.style.fontStyle = 'italic';
 					if (/underline/.test(st.textDecoration || st.textDecorationLine || '')) el.style.textDecoration = 'underline';
@@ -1073,53 +1200,119 @@ var ZotRecallUI = {
 		let listeners = [];
 		let changed = () => listeners.forEach(fn => fn());
 
-		// Deck combobox
-		let deckInput = h(doc, 'input', { type: 'text', class: 'zr-input', placeholder: 'Mazzo genitore::Mazzo figlio', spellcheck: 'false' });
+		// Deck autocomplete input (no toggle arrow; dropdown appears automatically as user types)
+		let deckInput = h(doc, 'input', {
+			type: 'text',
+			class: 'zr-input',
+			placeholder: 'Inizia a digitare il nome di un mazzo (es. Mazzo::Sottomazzo)…',
+			autocomplete: 'off',
+			spellcheck: 'false',
+		});
 		deckInput.value = cfg.deck || '';
 		let list = h(doc, 'div', { class: 'zr-combo-list', hidden: true, role: 'listbox' });
+		let matches = [];
+		let activeIndex = -1;
+		let selectDeck = (d) => {
+			deckInput.value = d;
+			list.hidden = true;
+			matches = [];
+			activeIndex = -1;
+			deckInput.focus();
+			try {
+				deckInput.setSelectionRange(d.length, d.length);
+			}
+			catch (e) {}
+			changed();
+		};
+		let setActive = (idx, scroll = true) => {
+			if (!matches.length) {
+				activeIndex = -1;
+				return;
+			}
+			activeIndex = ((idx % matches.length) + matches.length) % matches.length;
+			let children = Array.from(list.children);
+			children.forEach((el, i) => {
+				el.classList.toggle('active', i === activeIndex);
+				if (i === activeIndex && scroll && el.scrollIntoView) {
+					el.scrollIntoView({ block: 'nearest' });
+				}
+			});
+		};
 		let fill = (filter) => {
-			let q = String(filter || '').toLowerCase();
-			let decks = options.decks.filter(d => !q || d.toLowerCase().includes(q));
-			list.replaceChildren(...decks.slice(0, 200).map(d => h(doc, 'div', {
-				class: 'zr-combo-item' + (d === deckInput.value ? ' current' : ''),
+			let q = String(filter || '').trim().toLowerCase();
+			if (!q) {
+				matches = [];
+				activeIndex = -1;
+				list.replaceChildren();
+				list.hidden = true;
+				return;
+			}
+			let prefix = [];
+			let contains = [];
+			for (let d of options.decks) {
+				let dl = d.toLowerCase();
+				if (dl.startsWith(q)) prefix.push(d);
+				else if (dl.includes(q)) contains.push(d);
+			}
+			matches = prefix.concat(contains).slice(0, 200);
+			if (!matches.length) {
+				activeIndex = -1;
+				list.replaceChildren();
+				list.hidden = true;
+				return;
+			}
+			activeIndex = 0;
+			list.replaceChildren(...matches.map((d, idx) => h(doc, 'div', {
+				class: 'zr-combo-item' + (idx === activeIndex ? ' active' : '') + (d === deckInput.value.trim() ? ' current' : ''),
 				role: 'option',
-				onmousedown: (e) => {
+				onpointerenter: () => setActive(idx, false),
+				onpointerdown: (e) => {
 					e.preventDefault();
-					deckInput.value = d;
-					list.hidden = true;
-					changed();
+					e.stopPropagation();
+					selectDeck(d);
+				},
+				onclick: (e) => {
+					e.preventDefault();
+					e.stopPropagation();
+					selectDeck(d);
 				},
 			}, ...d.split('::').flatMap((part, i, all) => i < all.length - 1
 				? [h(doc, 'span', { class: 'zr-combo-parent', text: part + '::' })]
 				: [part]))));
-			if (!decks.length) list.append(h(doc, 'div', { class: 'zr-combo-empty', text: 'Nessun mazzo con questo nome: verrà creato.' }));
+			list.hidden = false;
 		};
-		let toggle = h(doc, 'button', {
-			class: 'zr-combo-toggle',
-			type: 'button',
-			title: 'Mostra i mazzi',
-			onmousedown: e => e.preventDefault(),
-			onclick: () => {
-				if (list.hidden) {
-					fill('');
-					list.hidden = false;
-					deckInput.focus();
-				}
-				else list.hidden = true;
-			},
-		}, '▾');
 		deckInput.addEventListener('input', () => {
 			fill(deckInput.value);
-			list.hidden = false;
 			changed();
 		});
 		deckInput.addEventListener('blur', () => {
 			list.hidden = true;
 		});
 		deckInput.addEventListener('keydown', (e) => {
+			if (!list.hidden && matches.length) {
+				if (e.key === 'ArrowDown') {
+					e.preventDefault();
+					e.stopPropagation();
+					setActive(activeIndex + 1);
+					return;
+				}
+				if (e.key === 'ArrowUp') {
+					e.preventDefault();
+					e.stopPropagation();
+					setActive(activeIndex - 1);
+					return;
+				}
+				if (e.key === 'Enter' && activeIndex >= 0 && activeIndex < matches.length) {
+					e.preventDefault();
+					e.stopPropagation();
+					selectDeck(matches[activeIndex]);
+					return;
+				}
+			}
 			if (e.key === 'Escape' && !list.hidden) {
-				list.hidden = true;
+				e.preventDefault();
 				e.stopPropagation();
+				list.hidden = true;
 			}
 		});
 		let deckHint = h(doc, 'p', { class: 'zr-note zr-deck-hint', hidden: true });
@@ -1176,7 +1369,7 @@ var ZotRecallUI = {
 		let field = (label, ...input) => h(doc, 'label', { class: 'zr-field' }, h(doc, 'span', { text: label }), ...input);
 		let node = h(doc, 'div', {},
 			h(doc, 'div', { class: 'zr-field' }, h(doc, 'span', { text: 'Mazzo' }),
-				h(doc, 'div', { class: 'zr-combo' }, deckInput, toggle, list),
+				h(doc, 'div', { class: 'zr-combo' }, deckInput, list),
 				deckHint),
 			field('Tipo di nota', modelSel),
 			h(doc, 'div', { class: 'zr-row', style: { alignItems: 'flex-start' } },
@@ -1395,7 +1588,7 @@ var ZotRecallUI = {
 			return h(doc, 'button', {
 				class: 'zr-sent-row',
 				title: 'Apri nell\'anteprima',
-				onclick: () => this.showPreview(reader, doc, popup, { cardID: c.id }),
+				onclick: () => this.showPreview(reader, doc, popup, { cardID: c.id, fromSent: true }),
 			},
 			h(doc, 'div', { class: 'zr-sent-q', text: c.question }),
 			h(doc, 'div', { class: 'zr-meta' },

@@ -191,13 +191,22 @@ test('generation lifecycle: fresh, unchanged, changed, discarded', () => {
 	assert.deepEqual(store.sentences, {});
 });
 
-test('back HTML keeps original highlight colors; CSV has two columns, no header', () => {
+test('back HTML keeps original highlight colors with contrasting text color; CSV has two columns, no header', () => {
 	let { sentences } = Core.extractFromDocument(makeDoc(), [ann('A4', P1B, '(ADP)', 1, 50, 700, '#ff6666')]);
 	let store = Core.emptyStore('X');
 	let [group] = Core.planGeneration(sentences, store);
 	Core.applyResults(store, group, [{ sentenceKeys: [sentences[0].key], questions: ['What does "ADP" stand for?'] }]);
 	let card = Core.activeCards(store)[0];
-	assert.ok(Core.backHTML(store, card).includes('<span style="background-color:#ff6666">(ADP)</span>'));
+	assert.ok(Core.backHTML(store, card).includes('<span style="background-color:#ff6666;color:#000000;border-radius:2px;padding:0 2px">(ADP)</span>'));
+	for (let c of Core.ZOTERO_COLORS) {
+		assert.equal(Core.highlightTextColor(c.hex), '#000000', `${c.name} uses dark text`);
+	}
+	assert.equal(Core.highlightTextColor('rgb(255, 212, 0)'), '#000000');
+	assert.equal(Core.highlightTextColor('#1e3a8a'), '#ffffff', 'dark custom color uses white text');
+	assert.equal(
+		Core.ensureHighlightContrast('<span style="background-color: rgb(255, 212, 0)">Hyperemia</span> and <span style="font-weight:bold">flow</span>'),
+		'<span style="background-color: rgb(255, 212, 0);color:#000000;border-radius:2px;padding:0 2px">Hyperemia</span> and <span style="font-weight:bold">flow</span>'
+	);
 	let csv = Core.toCSV(store);
 	assert.equal(csv.split('\r\n').filter(Boolean).length, 1);
 	assert.ok(csv.startsWith('"What does &quot;ADP&quot; stand for?","Dense (or δ) granules contain'));
@@ -303,16 +312,21 @@ test('anki state: new, sent, changed after edit; tags parsing; edited back', () 
 	assert.deepEqual(tags, ['patologia::emostasi', 'zotrecall']);
 
 	assert.equal(Core.ankiState(store, card, tags), 'new');
+	assert.equal(Core.unsentCards(store, tags).length, 1);
 	Core.markSent(store, card, { noteId: 123, deck: 'A::B', tags });
 	assert.equal(Core.ankiState(store, card, tags), 'sent');
+	assert.equal(Core.unsentCards(store, tags).length, 0, 'sent card excluded from unsentCards');
 	assert.equal(Core.ankiState(store, card, [...tags].reverse()), 'sent', 'tag order does not matter');
 	assert.equal(Core.ankiState(store, card, []), 'changed', 'different tags');
+	assert.equal(Core.unsentCards(store, []).length, 1, 'card with changed tags included in unsentCards');
 
 	Core.editCard(store, card.id, null, '<b>Dense</b> granules');
 	assert.equal(Core.backHTML(store, card), '<b>Dense</b> granules');
 	assert.equal(card.question, 'Q?');
 	assert.equal(Core.ankiState(store, card, tags), 'changed');
+	assert.equal(Core.unsentCards(store, tags).length, 1, 'edited card included in unsentCards');
 	Core.editCard(store, card.id, null, null);
 	assert.ok(Core.backHTML(store, card).includes('background-color'), 'back restored');
 	assert.equal(Core.ankiState(store, card, tags), 'sent');
+	assert.equal(Core.unsentCards(store, tags).length, 0);
 });
