@@ -866,13 +866,55 @@ var ZotRecallCore = (function () {
 		return card;
 	}
 
-	function editCard(store, cardID, question) {
+	/**
+	 * Edit a card. `back` is sanitized HTML for the back, or null to go back
+	 * to the source sentence(s) built by the code.
+	 */
+	function editCard(store, cardID, question, back) {
 		let card = store.cards.find(c => c.id === cardID);
 		if (card) {
-			card.question = String(question).trim();
+			if (question !== undefined && question !== null) card.question = String(question).trim();
+			if (back !== undefined) {
+				if (back === null || !String(back).trim()) delete card.back;
+				else card.back = String(back);
+			}
 			card.edited = true;
 		}
 		return card;
+	}
+
+	// ------------------------------------------------------------------
+	// Anki sync state
+	// ------------------------------------------------------------------
+
+	/** Anki tags from user text: space separated, "::" for hierarchy. */
+	function parseTags(text) {
+		return [...new Set(String(text || '').split(/\s+/).map(t => t.trim()).filter(Boolean))];
+	}
+
+	/** What Anki would receive for this card; changes when front, back or tags change. */
+	function ankiSignature(store, card, tags = []) {
+		return hash(frontHTML(card) + '\u0001' + backHTML(store, card) + '\u0001' + [...tags].sort().join(' '));
+	}
+
+	/**
+	 * 'new': never sent; 'sent': Anki has exactly this card;
+	 * 'changed': sent, but edited or regenerated since.
+	 */
+	function ankiState(store, card, tags = []) {
+		if (!card.ankiNoteId) return 'new';
+		return card.ankiSig === ankiSignature(store, card, tags) ? 'sent' : 'changed';
+	}
+
+	function markSent(store, card, { noteId, deck, tags = [] }) {
+		card.ankiNoteId = noteId;
+		card.ankiDeck = deck;
+		card.ankiSig = ankiSignature(store, card, tags);
+		card.sentAt = new Date().toISOString();
+	}
+
+	function sentCards(store) {
+		return activeCards(store).filter(c => c.ankiNoteId);
 	}
 
 	function deleteCard(store, cardID) {
@@ -928,6 +970,7 @@ var ZotRecallCore = (function () {
 
 	/** Back of a card: the source sentence(s), highlights in their original colors. */
 	function backHTML(store, card) {
+		if (card.back) return card.back;
 		return card.sentenceKeys
 			.map(k => store.sentences[k])
 			.filter(Boolean)
@@ -1187,6 +1230,11 @@ Return only JSON: {"groups":[{"sentence_ids":["..."],"questions":["..."]}],"skip
 		discardedCards,
 		setCardStatus,
 		editCard,
+		parseTags,
+		ankiSignature,
+		ankiState,
+		markSent,
+		sentCards,
 		deleteCard,
 		emptyTrash,
 		orphanKeys,

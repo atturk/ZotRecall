@@ -26,6 +26,7 @@ var ZotRecall = {
 			}
 		}, id);
 		this.addToOpenReaders();
+		this.registerMenu();
 		this.log('Started ' + version);
 	},
 
@@ -36,7 +37,7 @@ var ZotRecall = {
 		for (let reader of Zotero.Reader._readers || []) {
 			try {
 				let doc = reader._iframeWindow && reader._iframeWindow.document;
-				if (!doc || doc.querySelector('.zotrecall-button')) continue;
+				if (!doc || doc.documentElement.hasAttribute('data-zotrecall')) continue;
 				let container = doc.querySelector('.toolbar .end .custom-sections')
 					|| doc.querySelector('.toolbar .end');
 				if (!container) continue;
@@ -52,7 +53,68 @@ var ZotRecall = {
 		}
 	},
 
+	/** Strumenti → ZotRecall submenu in the main window menubar. */
+	registerMenu() {
+		if (!Zotero.MenuManager || !Zotero.MenuManager.registerMenu) {
+			this.log('MenuManager not available');
+			return;
+		}
+		let item = (label, open, needsPDF = true) => ({
+			menuType: 'menuitem',
+			enableForTabTypes: needsPDF ? ['reader/pdf'] : undefined,
+			onShowing: (event, context) => {
+				context.menuElem && context.menuElem.setAttribute('label', label);
+			},
+			onCommand: () => {
+				try {
+					open(this.getActiveReader());
+				}
+				catch (e) {
+					Zotero.logError(e);
+				}
+			},
+		});
+		let sep = { menuType: 'separator' };
+		let menus = [
+			item('Anteprima e invio carte…', r => ZotRecallUI.open(r, 'preview')),
+			item('Rivedi i periodi nella barra laterale', r => ZotRecallUI.openSidebar(r)),
+			item('Genera carte di tutto il documento…', r => ZotRecallUI.open(r, 'generate', {})),
+			sep,
+			item('Carte inviate ad Anki…', r => ZotRecallUI.open(r, 'sent')),
+			item('Esporta o invia in blocco…', r => ZotRecallUI.open(r, 'export')),
+			item('Carte scartate…', r => ZotRecallUI.open(r, 'trash')),
+			sep,
+			item('Mazzo Anki…', r => ZotRecallUI.open(r, 'anki'), false),
+			item('Impostazioni…', r => ZotRecallUI.open(r, 'settings'), false),
+		].map(m => Object.fromEntries(Object.entries(m).filter(([, v]) => v !== undefined)));
+		this._menuID = Zotero.MenuManager.registerMenu({
+			menuID: 'zotrecall-tools',
+			pluginID: this.id,
+			target: 'main/menubar/tools',
+			menus: [{
+				menuType: 'submenu',
+				onShowing: (event, context) => {
+					context.menuElem && context.menuElem.setAttribute('label', 'ZotRecall');
+				},
+				menus,
+			}],
+		});
+	},
+
+	getActiveReader() {
+		let win = Zotero.getMainWindow();
+		let tabs = win && win.Zotero_Tabs;
+		if (!tabs) return null;
+		return Zotero.Reader.getByTabID(tabs.selectedID) || null;
+	},
+
 	shutdown() {
+		if (this._menuID && Zotero.MenuManager) {
+			try {
+				Zotero.MenuManager.unregisterMenu(this._menuID);
+			}
+			catch (e) {}
+		}
 		ZotRecallSidebar.shutdown();
 		ZotRecallUI.shutdown();
 		this._sdtCache.clear();
@@ -94,6 +156,7 @@ var ZotRecall = {
 			concurrency: Math.max(1, Math.min(8, parseInt(this.getPref('concurrency')) || 3)),
 			ankiURL: this.getPref('ankiURL') || 'http://127.0.0.1:8765',
 			ankiKey: this.getPref('ankiKey') || '',
+			closeOnOutsideClick: !!this.getPref('closeOnOutsideClick'),
 		};
 	},
 
@@ -107,6 +170,7 @@ var ZotRecall = {
 		this.setPref('concurrency', parseInt(s.concurrency) || 3);
 		this.setPref('ankiURL', String(s.ankiURL || '').trim());
 		this.setPref('ankiKey', String(s.ankiKey || '').trim());
+		if (s.closeOnOutsideClick !== undefined) this.setPref('closeOnOutsideClick', !!s.closeOnOutsideClick);
 	},
 
 	async getAPIKey() {
@@ -466,52 +530,97 @@ var ZotRecall = {
 		return this.ankiRequest('modelFieldNames', { modelName });
 	},
 
+	/** Default deck, note type, fields and tags used by "Invia". */
+	getAnkiConfig() {
+		let [front, back] = this.getJSONPref('lastFields', []);
+		return {
+			deck: this.getPref('lastDeck') || '',
+			model: this.getPref('lastModel') || '',
+			front: front || '',
+			back: back || '',
+			tags: this.getPref('ankiTags') || '',
+		};
+	},
+
+	saveAnkiConfig(cfg) {
+		this.setPref('lastDeck', String(cfg.deck || '').trim());
+		this.setPref('lastModel', String(cfg.model || ''));
+		this.setPref('lastFields', JSON.stringify([cfg.front || '', cfg.back || '']));
+		this.setPref('ankiTags', ZotRecallCore.parseTags(cfg.tags).join(' '));
+	},
+
+	ankiConfigError(cfg) {
+		if (!cfg.deck) return 'Scegli il mazzo di Anki (Strumenti → ZotRecall → Mazzo Anki).';
+		if (!/^[^:]+(::[^:]+)*$/.test(cfg.deck.trim())) return 'Nome del mazzo non valido: usa "Mazzo genitore::Mazzo figlio".';
+		if (!cfg.model || !cfg.front || !cfg.back) return 'Scegli tipo di nota, campo fronte e campo retro (Strumenti → ZotRecall → Mazzo Anki).';
+		if (cfg.front === cfg.back) return 'Fronte e retro devono essere due campi diversi.';
+		return null;
+	},
+
+	async createDeck(deck) {
+		return this.ankiRequest('createDeck', { deck: deck.trim() });
+	},
+
 	/**
-	 * Send active cards to Anki. Cards already sent are updated in place.
-	 * @param {Object} opts {deck, model, frontField, backField, onProgress}
-	 * @returns {Promise<{added, updated, failed: string[]}>}
+	 * Send cards to Anki, never twice the same: new cards are added, cards
+	 * changed since the last send are updated, unchanged ones are skipped.
+	 * A note deleted in Anki is added again.
+	 * @param {Object} opts {cardIDs (default: all active), cfg (default: saved config), onProgress}
+	 * @returns {Promise<{added, updated, skipped, failed: string[]}>}
 	 */
-	async exportToAnki(attachment, opts) {
+	async sendToAnki(attachment, opts = {}) {
+		let cfg = opts.cfg || this.getAnkiConfig();
+		let err = this.ankiConfigError(cfg);
+		if (err) throw new Error(err);
 		let store = this.loadStore(attachment);
 		let cards = ZotRecallCore.activeCards(store);
-		if (!cards.length) throw new Error('Nessuna carta da esportare.');
+		if (opts.cardIDs) cards = cards.filter(c => opts.cardIDs.includes(c.id));
+		if (!cards.length) throw new Error('Nessuna carta da inviare.');
+		let tags = ZotRecallCore.parseTags(cfg.tags);
+		let deck = cfg.deck.trim();
 		let decks = await this.ankiRequest('deckNames');
-		if (!decks.includes(opts.deck)) {
-			await this.ankiRequest('createDeck', { deck: opts.deck });
+		if (!decks.includes(deck)) await this.createDeck(deck);
+
+		let todo = cards.filter(c => ZotRecallCore.ankiState(store, c, tags) !== 'sent');
+		let skipped = cards.length - todo.length;
+		let existing = new Set();
+		let ids = todo.map(c => c.ankiNoteId).filter(Boolean);
+		if (ids.length) {
+			let info = await this.ankiRequest('notesInfo', { notes: ids });
+			(info || []).forEach(n => n && n.noteId && existing.add(n.noteId));
 		}
 		let added = 0;
 		let updated = 0;
 		let failed = [];
 		let done = 0;
 		let fieldsFor = card => ({
-			[opts.frontField]: ZotRecallCore.frontHTML(card),
-			[opts.backField]: ZotRecallCore.backHTML(store, card),
+			[cfg.front]: ZotRecallCore.frontHTML(card),
+			[cfg.back]: ZotRecallCore.backHTML(store, card),
 		});
-		// Notes deleted in Anki since the last export are added again
-		let existing = new Set();
-		let ids = cards.map(c => c.ankiNoteId).filter(Boolean);
-		if (ids.length) {
-			let info = await this.ankiRequest('notesInfo', { notes: ids });
-			(info || []).forEach(n => n && n.noteId && existing.add(n.noteId));
-		}
-		for (let card of cards) {
+		for (let card of todo) {
 			try {
 				if (card.ankiNoteId && existing.has(card.ankiNoteId)) {
-					await this.ankiRequest('updateNoteFields', { note: { id: card.ankiNoteId, fields: fieldsFor(card) } });
+					try {
+						await this.ankiRequest('updateNote', { note: { id: card.ankiNoteId, fields: fieldsFor(card), tags } });
+					}
+					catch (e) {
+						// Older AnkiConnect: fields only
+						await this.ankiRequest('updateNoteFields', { note: { id: card.ankiNoteId, fields: fieldsFor(card) } });
+					}
+					ZotRecallCore.markSent(store, card, { noteId: card.ankiNoteId, deck: card.ankiDeck || deck, tags });
 					updated++;
 				}
 				else {
 					let id = await this.ankiRequest('addNote', {
 						note: {
-							deckName: opts.deck,
-							modelName: opts.model,
+							deckName: deck,
+							modelName: cfg.model,
 							fields: fieldsFor(card),
 							options: { allowDuplicate: false, duplicateScope: 'deck' },
-							tags: [],
+							tags,
 						},
 					});
-					card.ankiNoteId = id;
-					card.ankiDeck = opts.deck;
+					ZotRecallCore.markSent(store, card, { noteId: id, deck, tags });
 					added++;
 				}
 			}
@@ -519,13 +628,10 @@ var ZotRecall = {
 				failed.push(`"${card.question.slice(0, 60)}": ${e.message}`);
 			}
 			done++;
-			opts.onProgress && opts.onProgress(done, cards.length);
+			opts.onProgress && opts.onProgress(done, todo.length);
 		}
-		this.setPref('lastDeck', opts.deck);
-		this.setPref('lastModel', opts.model);
-		this.setPref('lastFields', JSON.stringify([opts.frontField, opts.backField]));
-		if (added) await this.saveStore(attachment, store);
-		return { added, updated, failed };
+		if (added || updated) await this.saveStore(attachment, store);
+		return { added, updated, skipped, failed };
 	},
 
 	// ------------------------------------------------------------------

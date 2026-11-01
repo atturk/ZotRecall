@@ -208,9 +208,13 @@ var ZotRecallSidebar = {
 		let sets = {};
 		for (let k of Object.keys(cls)) sets[k] = new Set(cls[k].map(s => s.key));
 		let cardCount = new Map();
-		for (let c of store.cards) {
-			if (c.status !== 'active') continue;
-			for (let k of c.sentenceKeys) cardCount.set(k, (cardCount.get(k) || 0) + 1);
+		let firstCard = new Map();
+		let active = ZotRecallCore.activeCards(store);
+		for (let c of active) {
+			for (let k of c.sentenceKeys) {
+				cardCount.set(k, (cardCount.get(k) || 0) + 1);
+				if (!firstCard.has(k)) firstCard.set(k, c.id);
+			}
 		}
 		state.units = units;
 		let ids = new Set(units.map(u => u.id));
@@ -229,7 +233,8 @@ var ZotRecallSidebar = {
 		for (let u of shown) {
 			let status = this.unitStatus(u, sets);
 			let n = Math.max(0, ...u.keys.map(k => cardCount.get(k) || 0));
-			let el = this.unitNode(doc, u, status, n);
+			let cardID = u.keys.map(k => firstCard.get(k)).find(Boolean);
+			let el = this.unitNode(doc, u, status, n, cardID);
 			if (firstOnPage === null && u.sentences.some(s => s.pageIndex >= page)) firstOnPage = el;
 			list.append(el);
 		}
@@ -271,7 +276,13 @@ var ZotRecallSidebar = {
 						state.scrolled = false;
 						this.render(doc, null, { resetScroll: true });
 					},
-				}, state.pageFilter ? `Solo pagina ${page + 1} ✕` : 'Solo questa pagina')),
+				}, state.pageFilter ? `Solo pagina ${page + 1} ✕` : 'Solo questa pagina'),
+				h(doc, 'button', {
+					class: 'zr-sb-btn',
+					disabled: !active.length,
+					title: 'Controlla, modifica e invia ad Anki le carte una alla volta',
+					onclick: () => this.ui.open(reader, 'preview', 0),
+				}, `Anteprima e invio (${active.length})`)),
 			this.selectionBar(doc, state),
 			state.error ? h(doc, 'p', { class: 'zr-sb-error', text: state.error }) : null);
 		state.error = '';
@@ -312,7 +323,7 @@ var ZotRecallSidebar = {
 		return { kind: 'new', label: 'Da generare' };
 	},
 
-	unitNode(doc, u, status, cards) {
+	unitNode(doc, u, status, cards, cardID) {
 		let h = this.ui.h.bind(this.ui);
 		let state = this._states.get(doc);
 		let pages = [...new Set(u.sentences.map(s => s.pageIndex + 1))];
@@ -349,10 +360,19 @@ var ZotRecallSidebar = {
 				u.before.length || u.after.length
 					? h(doc, 'span', { class: 'zr-sb-tag zr-sb-merged', title: 'Periodi non evidenziati aggiunti come contesto', text: `+${u.before.length + u.after.length}` })
 					: null,
-				h(doc, 'span', {
-					class: 'zr-sb-tag zr-sb-' + status.kind,
-					text: status.kind === 'done' && cards ? `${cards} ${cards === 1 ? 'carta' : 'carte'}` : status.label,
-				}),
+				cardID
+					? h(doc, 'button', {
+						class: 'zr-sb-tag zr-sb-' + status.kind + ' zr-sb-cards',
+						title: 'Apri le carte di questo periodo nell\'anteprima',
+						onclick: (e) => {
+							e.stopPropagation();
+							this.ui.open(state.reader, 'preview', { cardID });
+						},
+					}, status.kind === 'done' && cards ? `${cards} ${cards === 1 ? 'carta' : 'carte'}` : status.label)
+					: h(doc, 'span', {
+						class: 'zr-sb-tag zr-sb-' + status.kind,
+						text: status.label,
+					}),
 				more)),
 		h(doc, 'div', { class: 'zr-sb-text' },
 			h(doc, 'div', { class: 'zr-sb-border', style: { backgroundColor: color } }),
@@ -633,6 +653,8 @@ var ZotRecallSidebar = {
 .zr-sb-done { background: rgba(95,178,54,.18); color: #3f8a1f; }
 .zr-sb-changed { background: #fde8c8; color: #8a5300; }
 .zr-sb-merged { background: rgba(162,138,229,.32); color: var(--fill-primary); }
+.zr-sb-cards { border: 0; font: inherit; font-size: 10px; cursor: pointer; }
+.zr-sb-cards:hover { text-decoration: underline; }
 .zr-sb-more { display: inline-flex; padding: 1px 2px; border: 0; border-radius: 4px; background: none; color: var(--fill-secondary); cursor: pointer; }
 .zr-sb-more svg { stroke-width: 2.6; }
 .zr-sb-more:hover { background: var(--fill-quinary); }

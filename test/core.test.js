@@ -289,3 +289,30 @@ test('review: include the previous or next non-highlighted sentence', () => {
 	assert.equal(Core.classify(sentences, store).changed.length, 1);
 	assert.equal(store.review.extend[s.key], undefined);
 });
+
+test('anki state: new, sent, changed after edit; tags parsing; edited back', () => {
+	let doc = makeDoc();
+	let a3 = ann('A3', P1B, 'Dense (or δ) granules', 1, 50, 700);
+	let store = Core.emptyStore('X');
+	let { sentences } = Core.extractFromDocument(doc, [a3]);
+	let [group] = Core.planGeneration(sentences, store);
+	let { idMap } = Core.buildMessages(group);
+	Core.applyResults(store, group, Core.parseResponse('{"groups":[{"sentence_ids":["s1"],"questions":["Q?"]}],"skipped":[]}', idMap).results);
+	let card = Core.activeCards(store)[0];
+	let tags = Core.parseTags('  patologia::emostasi  zotrecall patologia::emostasi ');
+	assert.deepEqual(tags, ['patologia::emostasi', 'zotrecall']);
+
+	assert.equal(Core.ankiState(store, card, tags), 'new');
+	Core.markSent(store, card, { noteId: 123, deck: 'A::B', tags });
+	assert.equal(Core.ankiState(store, card, tags), 'sent');
+	assert.equal(Core.ankiState(store, card, [...tags].reverse()), 'sent', 'tag order does not matter');
+	assert.equal(Core.ankiState(store, card, []), 'changed', 'different tags');
+
+	Core.editCard(store, card.id, null, '<b>Dense</b> granules');
+	assert.equal(Core.backHTML(store, card), '<b>Dense</b> granules');
+	assert.equal(card.question, 'Q?');
+	assert.equal(Core.ankiState(store, card, tags), 'changed');
+	Core.editCard(store, card.id, null, null);
+	assert.ok(Core.backHTML(store, card).includes('background-color'), 'back restored');
+	assert.equal(Core.ankiState(store, card, tags), 'sent');
+});

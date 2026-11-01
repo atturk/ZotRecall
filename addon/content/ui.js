@@ -1,10 +1,9 @@
 /*
- * ZotRecall UI: reader toolbar button and floating popup.
- * Everything is built with DOM APIs inside the reader document.
+ * ZotRecall UI: floating window (opened from Strumenti → ZotRecall or from
+ * the sidebar). Everything is built with DOM APIs inside the reader document.
  */
 var ZotRecallUI = {
 	app: null,
-	_buttons: new Set(),
 	_timers: new Set(),
 
 	init(app) {
@@ -12,23 +11,22 @@ var ZotRecallUI = {
 	},
 
 	shutdown() {
-		for (let { win, timer } of this._timers) {
+		for (let { win, timer, doc } of this._timers) {
 			try {
 				win.clearInterval(timer);
+				doc.getElementById('zotrecall-popup')?.remove();
+				doc.getElementById('zotrecall-style')?.remove();
+				doc.documentElement.removeAttribute('data-zotrecall');
 			}
 			catch (e) {}
 		}
 		this._timers.clear();
-		for (let btn of this._buttons) {
-			try {
-				let doc = btn.ownerDocument;
-				doc.getElementById('zotrecall-popup')?.remove();
-				doc.getElementById('zotrecall-style')?.remove();
-				btn.remove();
-			}
-			catch (e) {}
+		try {
+			let main = Zotero.getMainWindow().document;
+			main.getElementById('zotrecall-popup')?.remove();
+			main.getElementById('zotrecall-style')?.remove();
 		}
-		this._buttons.clear();
+		catch (e) {}
 	},
 
 	// ------------------------------------------------------------------
@@ -87,19 +85,13 @@ var ZotRecallUI = {
 		let style = doc.createElement('style');
 		style.id = 'zotrecall-style';
 		style.textContent = `
-.zotrecall-button { position: relative; }
-.zotrecall-badge {
-	position: absolute; top: 1px; right: 0; min-width: 14px; height: 14px; padding: 0 3px;
-	border-radius: 7px; background: #ffd400; color: #000; font: 600 9px/14px system-ui, sans-serif;
-	text-align: center; pointer-events: none; box-sizing: border-box;
-}
-.zotrecall-badge[hidden] { display: none; }
 #zotrecall-popup {
 	--zr-bg: #ffffff; --zr-fg: #1f1f1f; --zr-muted: #6b6b6b; --zr-border: rgba(0,0,0,.12);
 	--zr-hover: rgba(0,0,0,.05); --zr-accent: #2f6fde; --zr-accent-fg: #fff; --zr-danger: #c7372f;
 	--zr-field: #fff;
-	position: fixed; top: 44px; right: 8px; z-index: 100000; width: 380px; max-width: calc(100vw - 16px);
-	max-height: calc(100vh - 60px); overflow: auto; box-sizing: border-box;
+	position: fixed; z-index: 100000; min-width: 320px; min-height: 220px; max-width: calc(100vw - 8px);
+	max-height: calc(100vh - 8px); overflow: auto; resize: both; box-sizing: border-box;
+	display: flex; flex-direction: column;
 	background: var(--zr-bg); color: var(--zr-fg); border: 1px solid var(--zr-border); border-radius: 10px;
 	box-shadow: 0 8px 28px rgba(0,0,0,.18); font: 13px/1.4 system-ui, -apple-system, sans-serif;
 }
@@ -110,12 +102,14 @@ var ZotRecallUI = {
 	}
 }
 #zotrecall-popup * { box-sizing: border-box; }
-.zr-header { display: flex; align-items: center; gap: 4px; padding: 8px 8px 8px 14px; border-bottom: 1px solid var(--zr-border); position: sticky; top: 0; background: var(--zr-bg); z-index: 1; }
+.zr-header { display: flex; align-items: center; gap: 4px; padding: 8px 8px 8px 14px; border-bottom: 1px solid var(--zr-border); position: sticky; top: 0; background: var(--zr-bg); z-index: 1; cursor: move; user-select: none; flex: none; }
+#zotrecall-popup.zr-dragging { opacity: .92; user-select: none; }
+.zr-header button { cursor: pointer; }
 .zr-title { flex: 1; font-weight: 600; font-size: 13px; }
 .zr-icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: 0; border-radius: 6px; background: transparent; color: var(--zr-fg); cursor: pointer; position: relative; }
 .zr-icon-btn:hover { background: var(--zr-hover); }
 .zr-icon-btn .zr-count { position: absolute; top: 0; right: 0; font-size: 9px; font-weight: 600; color: var(--zr-muted); }
-.zr-body { padding: 12px 14px 14px; }
+.zr-body { padding: 12px 14px 14px; flex: 1 0 auto; }
 .zr-action { display: flex; width: 100%; align-items: center; gap: 10px; padding: 10px 12px; margin-bottom: 6px; border: 1px solid var(--zr-border); border-radius: 8px; background: transparent; color: var(--zr-fg); cursor: pointer; text-align: left; font: inherit; }
 .zr-action:hover:not(:disabled) { background: var(--zr-hover); }
 .zr-action:disabled { opacity: .5; cursor: default; }
@@ -163,79 +157,145 @@ var ZotRecallUI = {
 .zr-select { width: 100%; padding: 5px 6px; border: 1px solid var(--zr-border); border-radius: 6px; background: var(--zr-field); color: var(--zr-fg); font: inherit; }
 .zr-field input[type=text] + * , .zr-field select + input { margin-top: 6px; }
 .zr-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.zr-footer.zr-session { justify-content: space-between; align-items: center; }
+.zr-wrap { flex-wrap: wrap; justify-content: center; }
+.zr-center { text-align: center; }
+.zr-deck-link { font-size: 12px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 4px; }
+.zr-tag-ok { background: rgba(95,178,54,.2); color: #3f8a1f; }
+.zr-edit-label { font-size: 11px; font-weight: 600; color: var(--zr-muted); margin: 0 0 4px; }
+.zr-edit-label:not(:first-child) { margin-top: 12px; }
+.zr-card.zr-editing .zr-edit { font: 600 14px/1.4 system-ui, sans-serif; min-height: 52px; }
+.zr-rich span { color: #000; border-radius: 2px; }
+.zr-rich-wrap { border: 1px solid var(--zr-border); border-radius: 6px; background: var(--zr-field); }
+.zr-toolbar { display: flex; align-items: center; gap: 2px; padding: 3px 4px; border-bottom: 1px solid var(--zr-border); flex-wrap: wrap; }
+.zr-tool { min-width: 24px; height: 24px; padding: 0 5px; border: 0; border-radius: 4px; background: none; color: var(--zr-fg); font: 13px/24px Georgia, serif; cursor: pointer; }
+.zr-tool:hover { background: var(--zr-hover); }
+.zr-tool-reset { margin-left: auto; font-family: system-ui, sans-serif; }
+.zr-hl-icon { padding: 0 3px; background: #ffd400; color: #000; border-radius: 2px; font-family: system-ui, sans-serif; font-weight: 600; }
+.zr-colors { display: inline-flex; gap: 3px; padding: 0 4px; align-items: center; }
+.zr-colors[hidden] { display: none !important; }
+.zr-color-dot { min-width: 16px; width: 16px; height: 16px; padding: 0; border-radius: 50%; border: 1px solid rgba(0,0,0,.2); }
+.zr-color-none { font-family: system-ui, sans-serif; font-size: 12px; }
+.zr-rich-edit { min-height: 110px; max-height: 50vh; overflow: auto; padding: 8px; outline: none; font: 13px/1.5 system-ui, sans-serif; color: var(--zr-fg); text-align: left; }
+.zr-card-back.zr-rich { line-height: 1.5; }
+.zr-input { width: 100%; padding: 6px 8px; border: 1px solid var(--zr-border); border-radius: 6px; background: var(--zr-field); color: var(--zr-fg); font: inherit; }
+.zr-combo { position: relative; }
+.zr-combo .zr-input { padding-right: 30px; }
+.zr-combo-toggle { position: absolute; right: 2px; top: 2px; bottom: 2px; width: 26px; border: 0; border-radius: 5px; background: none; color: var(--zr-muted); cursor: pointer; }
+.zr-combo-toggle:hover { background: var(--zr-hover); }
+.zr-combo-list { position: absolute; left: 0; right: 0; top: calc(100% + 2px); z-index: 5; max-height: 220px; overflow: auto; padding: 4px; border: 1px solid var(--zr-border); border-radius: 6px; background: var(--zr-bg); box-shadow: 0 6px 18px rgba(0,0,0,.2); }
+.zr-combo-list[hidden] { display: none !important; }
+.zr-combo-item { padding: 4px 8px; border-radius: 4px; cursor: default; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.zr-combo-item:hover { background: var(--zr-accent); color: var(--zr-accent-fg); }
+.zr-combo-item:hover .zr-combo-parent { color: inherit; opacity: .8; }
+.zr-combo-item.current { font-weight: 600; }
+.zr-combo-parent { color: var(--zr-muted); }
+.zr-combo-empty { padding: 4px 8px; font-size: 12px; color: var(--zr-muted); }
+.zr-deck-hint { margin-top: 4px; }
+.zr-sent-row { display: block; width: 100%; text-align: left; padding: 8px 10px; margin-bottom: 6px; border: 1px solid var(--zr-border); border-radius: 8px; background: transparent; color: var(--zr-fg); font: inherit; cursor: pointer; }
+.zr-sent-row:hover { background: var(--zr-hover); }
+.zr-sent-q { font-weight: 600; margin-bottom: 3px; }
+.zr-sent-row .zr-meta { font-size: 11px; color: var(--zr-muted); }
+.zr-sent-row .zr-tag { margin-left: 0; }
 `;
 		(doc.head || doc.documentElement).append(style);
 	},
 
 	// ------------------------------------------------------------------
-	// Toolbar button
+	// Reader hook: no toolbar button anymore (everything is in the sidebar
+	// and in Strumenti → ZotRecall). The hook keeps the sidebar tab alive.
 	// ------------------------------------------------------------------
 
-	onRenderToolbar({ reader, doc, append }) {
-		if (doc.querySelector('.zotrecall-button')) return;
+	onRenderToolbar({ reader, doc }) {
+		let root = doc.documentElement;
+		if (root.hasAttribute('data-zotrecall')) return;
+		root.setAttribute('data-zotrecall', '');
 		this.injectStyle(doc);
-		let badge = this.h(doc, 'span', { class: 'zotrecall-badge', hidden: true });
-		let btn = this.h(doc, 'button', {
-			class: 'toolbar-button zotrecall-button',
-			title: 'ZotRecall: carte di recall dalle evidenziazioni',
-			tabindex: '-1',
-		}, this.svg(doc, this.ICONS.cards), badge);
-		btn.addEventListener('click', (e) => {
-			e.stopPropagation();
-			this.togglePopup(reader, doc, btn);
-		});
-		append(btn);
-		this._buttons.add(btn);
-
 		let win = doc.defaultView;
-		let entry = { win, timer: null };
-		let update = () => {
-			if (!btn.isConnected) {
+		let entry = { win, timer: null, doc };
+		let stop = () => {
+			try {
 				win.clearInterval(entry.timer);
-				this._timers.delete(entry);
-				this._buttons.delete(btn);
+			}
+			catch (e) {}
+			this._timers.delete(entry);
+		};
+		let update = () => {
+			if (win.closed || !doc.documentElement || !doc.documentElement.hasAttribute('data-zotrecall')) {
+				stop();
 				return;
 			}
 			try {
 				ZotRecallSidebar.ensure(reader, doc);
+				let popup = doc.getElementById('zotrecall-popup');
+				if (popup && popup._zrRefresh) {
+					let page = this.app.getCurrentPageIndex(reader);
+					if (popup._zrPage !== page) popup._zrRefresh();
+				}
 			}
 			catch (e) {}
-			try {
-				let attachment = this.app.getAttachment(reader);
-				if (!attachment || !attachment.isPDFAttachment()) {
-					badge.hidden = true;
-					return;
-				}
-				let page = this.app.getCurrentPageIndex(reader);
-				let n = this.app.countPageHighlights(attachment, page);
-				badge.textContent = n > 99 ? '99+' : String(n);
-				badge.hidden = n === 0;
-				let popup = doc.getElementById('zotrecall-popup');
-				if (popup && popup._zrRefresh && popup._zrPage !== page) popup._zrRefresh();
-			}
-			catch (e) {
-				badge.hidden = true;
-			}
 		};
+		win.addEventListener('unload', stop);
 		entry.timer = win.setInterval(update, 1000);
 		this._timers.add(entry);
 		update();
 	},
 
+	openSidebar(reader) {
+		if (!reader) return;
+		let doc = reader._iframeWindow && reader._iframeWindow.document;
+		if (doc && ZotRecallSidebar.ensure(reader, doc)) ZotRecallSidebar.activate(doc);
+	},
+
 	// ------------------------------------------------------------------
-	// Popup
+	// Floating window: centered, draggable by its header, resizable.
+	// Lives in the reader document when a PDF is open, otherwise in the
+	// main Zotero window.
 	// ------------------------------------------------------------------
 
-	togglePopup(reader, doc, btn) {
-		let existing = doc.getElementById('zotrecall-popup');
-		if (existing) {
-			existing._zrClose();
-			return;
+	_geometry: null,
+
+	hostDocument(reader) {
+		let doc = reader && reader._iframeWindow && reader._iframeWindow.document;
+		if (doc && doc.documentElement) return doc;
+		return Zotero.getMainWindow().document;
+	},
+
+	/**
+	 * Open the window on a view.
+	 * @param {string} view main | preview | generate | sent | export | trash | anki | settings
+	 */
+	open(reader, view = 'main', arg) {
+		let doc = this.hostDocument(reader);
+		this.injectStyle(doc);
+		let popup = doc.getElementById('zotrecall-popup') || this.createWindow(doc);
+		let views = {
+			main: () => this.showMain(reader, doc, popup),
+			preview: () => this.showPreview(reader, doc, popup, arg || 0),
+			generate: () => this.startGeneration(reader, doc, popup, arg || {}),
+			sent: () => this.showSent(reader, doc, popup),
+			export: () => this.showExport(reader, doc, popup),
+			trash: () => this.showTrash(reader, doc, popup),
+			anki: () => this.showAnkiConfig(reader, doc, popup),
+			settings: () => this.showSettings(reader, doc, popup),
+		};
+		let needsPDF = !['anki', 'settings'].includes(view);
+		let attachment = reader && this.app.getAttachment(reader);
+		if (needsPDF && (!attachment || !attachment.isPDFAttachment())) {
+			this.setView(popup, this.header(doc, popup, 'ZotRecall'),
+				this.h(doc, 'div', { class: 'zr-body' }, this.h(doc, 'p', { class: 'zr-note', text: 'Apri un PDF per usare questa funzione.' })));
+			return popup;
 		}
-		let popup = this.h(doc, 'div', { id: 'zotrecall-popup', role: 'dialog' });
-		let offOutside = null;
+		(views[view] || views.main)();
+		return popup;
+	},
+
+	createWindow(doc) {
+		let popup = this.h(doc, 'div', { id: 'zotrecall-popup', role: 'dialog', tabindex: '-1' });
+		let win = doc.defaultView;
 		let onKey = (e) => {
-			if (e.key === 'Escape') {
+			if (!popup.isConnected) return;
+			if (e.key === 'Escape' && !popup._zrEditing) {
 				close();
 				return;
 			}
@@ -244,16 +304,61 @@ var ZotRecallUI = {
 				e.stopPropagation();
 			}
 		};
+		let offOutside = null;
 		let close = () => {
+			this.rememberGeometry(popup);
 			popup.remove();
 			if (offOutside) offOutside();
 			doc.removeEventListener('keydown', onKey, true);
 		};
 		popup._zrClose = close;
-		offOutside = this.onOutsideClick(doc, popup, close, [btn]);
 		doc.addEventListener('keydown', onKey, true);
-		doc.body.append(popup);
-		this.showMain(reader, doc, popup);
+		if (this.app.getPref('closeOnOutsideClick')) offOutside = this.onOutsideClick(doc, popup, close);
+		(doc.body || doc.documentElement).append(popup);
+
+		// Geometry: last size and position, or centered
+		let g = this._geometry;
+		let W = win.innerWidth;
+		let H = win.innerHeight;
+		let width = Math.min(g ? g.width : 460, W - 16);
+		let height = Math.min(g ? g.height : Math.round(H * 0.75), H - 16);
+		popup.style.width = width + 'px';
+		popup.style.height = height + 'px';
+		let left = g ? Math.min(Math.max(8, g.left), W - width - 8) : Math.round((W - width) / 2);
+		let top = g ? Math.min(Math.max(8, g.top), H - height - 8) : Math.round((H - height) / 2);
+		popup.style.left = Math.max(8, left) + 'px';
+		popup.style.top = Math.max(8, top) + 'px';
+
+		// Drag by the header (but not by its buttons)
+		popup.addEventListener('mousedown', (e) => {
+			let header = e.target.closest && e.target.closest('.zr-header');
+			if (!header || e.target.closest('button, input, select, textarea') || e.button !== 0) return;
+			e.preventDefault();
+			let r = popup.getBoundingClientRect();
+			let dx = e.clientX - r.left;
+			let dy = e.clientY - r.top;
+			let move = (ev) => {
+				popup.style.left = Math.min(Math.max(0, ev.clientX - dx), win.innerWidth - 60) + 'px';
+				popup.style.top = Math.min(Math.max(0, ev.clientY - dy), win.innerHeight - 40) + 'px';
+			};
+			let up = () => {
+				doc.removeEventListener('mousemove', move, true);
+				doc.removeEventListener('mouseup', up, true);
+				popup.classList.remove('zr-dragging');
+				this.rememberGeometry(popup);
+			};
+			popup.classList.add('zr-dragging');
+			doc.addEventListener('mousemove', move, true);
+			doc.addEventListener('mouseup', up, true);
+		});
+		popup.addEventListener('mouseup', () => this.rememberGeometry(popup));
+		return popup;
+	},
+
+	rememberGeometry(popup) {
+		if (!popup.isConnected) return;
+		let r = popup.getBoundingClientRect();
+		if (r.width && r.height) this._geometry = { left: r.left, top: r.top, width: r.width, height: r.height };
 	},
 
 	/**
@@ -363,32 +468,37 @@ var ZotRecallUI = {
 					onclick: () => this.startGeneration(reader, doc, popup, {}),
 				}),
 				this.action(doc, {
-					label: 'Anteprima carte',
-					sub: active ? 'Sfoglia le carte come flashcard' : 'Nessuna carta ancora',
+					label: 'Anteprima e invio carte',
+					sub: active ? 'Controlla, modifica e invia ad Anki una carta alla volta' : 'Nessuna carta ancora',
 					count: active,
 					disabled: !active,
 					onclick: () => this.showPreview(reader, doc, popup),
 				}),
 				this.action(doc, {
-					label: 'Esporta (CSV o Anki)',
-					sub: active ? 'Solo le carte attive, mai quelle scartate' : 'Nessuna carta da esportare',
+					label: 'Esporta o invia in blocco',
+					sub: active ? 'CSV, oppure tutte le carte nuove o modificate ad Anki' : 'Nessuna carta da esportare',
 					disabled: !active,
 					onclick: () => this.showExport(reader, doc, popup),
 				}),
-				doc.getElementById('zotrecall-sidebar-tab')
-					? this.action(doc, {
-						label: 'Rivedi i periodi nella barra laterale',
-						sub: 'Unisci, separa o escludi i periodi prima di generare',
-						onclick: () => {
-							popup._zrClose();
-							ZotRecallSidebar.activate(doc);
-						},
-					})
-					: this.action(doc, {
-						label: 'Mostra i periodi estratti di questa pagina',
-						sub: 'Verifica cosa riceverà il modello',
-						onclick: () => this.showExtracted(reader, doc, popup, page),
-					}),
+				this.action(doc, {
+					label: 'Rivedi i periodi nella barra laterale',
+					sub: 'Unisci, separa, aggiungi contesto o escludi prima di generare',
+					onclick: () => {
+						popup._zrClose();
+						this.openSidebar(reader);
+					},
+				}),
+				this.action(doc, {
+					label: 'Carte inviate ad Anki',
+					sub: 'Cosa è già in Anki e cosa è cambiato da allora',
+					disabled: !active,
+					onclick: () => this.showSent(reader, doc, popup),
+				}),
+				this.action(doc, {
+					label: 'Mazzo Anki',
+					sub: 'Mazzo predefinito, tipo di nota, campi e tag',
+					onclick: () => this.showAnkiConfig(reader, doc, popup),
+				}),
 				...notes,
 			);
 		};
@@ -413,36 +523,6 @@ var ZotRecallUI = {
 		}
 		text.append(doc.createTextNode(sentence.text.slice(pos)));
 		return text;
-	},
-
-	async showExtracted(reader, doc, popup, page) {
-		let body = this.h(doc, 'div', { class: 'zr-body' }, this.h(doc, 'p', { class: 'zr-note', text: 'Estrazione del testo in corso…' }));
-		this.setView(popup, this.header(doc, popup, `Periodi estratti · pagina ${page + 1}`, {
-			onBack: () => this.showMain(reader, doc, popup),
-		}), body);
-		try {
-			let attachment = this.app.getAttachment(reader);
-			let { sentences, unmatched } = await this.app.extract(attachment, page);
-			body.replaceChildren();
-			if (!sentences.length && !unmatched.length) {
-				body.append(this.h(doc, 'p', { class: 'zr-note', text: 'Nessuna evidenziazione su questa pagina.' }));
-			}
-			for (let s of sentences) {
-				body.append(this.h(doc, 'div', { class: 'zr-sentence' },
-					this.h(doc, 'div', { class: 'zr-meta', text: [s.section && `Sezione: ${s.section}`, `pag. ${s.pageIndex + 1}`].filter(Boolean).join(' · ') }),
-					this.sentenceNode(doc, s)));
-			}
-			if (unmatched.length) {
-				body.append(this.h(doc, 'p', {
-					class: 'zr-error',
-					text: `${unmatched.length} evidenziazioni non sono state collegate al testo (per esempio dentro immagini o tabelle).`,
-				}));
-			}
-		}
-		catch (e) {
-			Zotero.logError(e);
-			body.replaceChildren(this.h(doc, 'p', { class: 'zr-error', text: e.message || String(e) }));
-		}
 	},
 
 	// ------------------------------------------------------------------
@@ -527,16 +607,9 @@ var ZotRecallUI = {
 		update();
 	},
 
-	/** Open the popup (if needed) straight on the confirmation step. */
+	/** Open the window straight on the confirmation step. */
 	openGeneration(reader, doc, scope) {
-		let popup = doc.getElementById('zotrecall-popup');
-		if (!popup) {
-			let btn = doc.querySelector('.zotrecall-button');
-			if (!btn) return;
-			this.togglePopup(reader, doc, btn);
-			popup = doc.getElementById('zotrecall-popup');
-		}
-		this.startGeneration(reader, doc, popup, scope);
+		this.open(reader, 'generate', scope);
 	},
 
 	async runGeneration(reader, doc, popup, choice) {
@@ -585,68 +658,117 @@ var ZotRecallUI = {
 	// Preview (flashcards)
 	// ------------------------------------------------------------------
 
-	showPreview(reader, doc, popup, startIndex = 0) {
+	/**
+	 * Review session: go through the cards, flip, edit front and back, discard,
+	 * send each one to Anki.
+	 * @param {number|{cardID}} start index or card to start from
+	 */
+	showPreview(reader, doc, popup, start = 0) {
 		let h = this.h.bind(this);
 		let attachment = this.app.getAttachment(reader);
 		let store = this.app.loadStore(attachment);
 		let cards = ZotRecallCore.activeCards(store);
-		let index = Math.max(0, Math.min(startIndex, cards.length - 1));
+		let index = typeof start === 'object' && start
+			? Math.max(0, cards.findIndex(c => c.id === start.cardID))
+			: Math.max(0, Math.min(start || 0, cards.length - 1));
 		let flipped = false;
 		let editing = false;
+		let sending = false;
 		let orphans = new Set();
-		let error = h(doc, 'p', { class: 'zr-error', hidden: true });
+		let message = h(doc, 'p', { class: 'zr-note', hidden: true });
 		let body = h(doc, 'div', { class: 'zr-body' });
-		this.setView(popup, this.header(doc, popup, 'Anteprima carte', { onBack: () => this.showMain(reader, doc, popup) }), body);
+		let cfg = this.app.getAnkiConfig();
+		let tags = ZotRecallCore.parseTags(cfg.tags);
+		let deckLink = h(doc, 'button', {
+			class: 'zr-link zr-deck-link',
+			title: 'Mazzo, tipo di nota e tag usati da "Invia"',
+			onclick: () => this.showAnkiConfig(reader, doc, popup, () => this.showPreview(reader, doc, popup, { cardID: cards[index] && cards[index].id })),
+		}, cfg.deck ? '→ ' + cfg.deck : 'Scegli il mazzo');
+		this.setView(popup, this.header(doc, popup, 'Anteprima e invio', { onBack: () => this.showMain(reader, doc, popup), actions: [deckLink] }), body);
 
-		// Cards whose sentences are no longer highlighted
 		this.app.extract(attachment).then(({ sentences }) => {
 			orphans = new Set(ZotRecallCore.orphanKeys(store, sentences));
 			if (orphans.size && popup.isConnected && !editing) render();
 		}).catch(e => Zotero.logError(e));
 
+		let say = (text, kind = 'note') => {
+			message.className = 'zr-' + kind;
+			message.textContent = text;
+			message.hidden = !text;
+		};
 		let save = async () => {
 			try {
 				await this.app.saveStore(attachment, store);
-				error.hidden = true;
 			}
 			catch (e) {
 				Zotero.logError(e);
-				error.textContent = e.message || String(e);
-				error.hidden = false;
+				say(e.message || String(e), 'error');
 			}
 		};
-
+		let reload = (cardID) => {
+			store = this.app.loadStore(attachment);
+			cards = ZotRecallCore.activeCards(store);
+			let i = cards.findIndex(c => c.id === cardID);
+			index = i >= 0 ? i : Math.min(index, cards.length - 1);
+		};
 		let move = (delta) => {
 			index = Math.max(0, Math.min(cards.length - 1, index + delta));
 			flipped = false;
+			say('');
+			render();
+		};
+		let send = async (card) => {
+			let err = this.app.ankiConfigError(cfg);
+			if (err) {
+				say(err, 'error');
+				return;
+			}
+			sending = true;
+			render();
+			try {
+				let res = await this.app.sendToAnki(attachment, { cardIDs: [card.id], cfg });
+				reload(card.id);
+				if (res.failed.length) say(res.failed[0], 'error');
+				else say(res.added ? `Inviata a ${cfg.deck}.` : res.updated ? 'Aggiornata in Anki.' : 'Già in Anki, identica.', 'ok');
+			}
+			catch (e) {
+				Zotero.logError(e);
+				say(e.message || String(e), 'error');
+			}
+			sending = false;
 			render();
 		};
 
 		let render = () => {
+			popup._zrEditing = editing;
 			if (!cards.length) {
-				body.replaceChildren(h(doc, 'p', { class: 'zr-note', text: 'Nessuna carta attiva.' }), error);
+				body.replaceChildren(h(doc, 'p', { class: 'zr-note', text: 'Nessuna carta attiva.' }), message);
 				return;
 			}
 			let card = cards[index];
 			let isOrphan = card.sentenceKeys.some(k => orphans.has(k));
-			let question;
+			let state = ZotRecallCore.ankiState(store, card, tags);
+			let face;
+			let editor = null;
+			let questionBox = null;
 			if (editing) {
-				question = h(doc, 'textarea', { class: 'zr-edit' });
-				question.value = card.question;
+				questionBox = h(doc, 'textarea', { class: 'zr-edit', rows: '2' });
+				questionBox.value = card.question;
+				editor = this.richEditor(doc, ZotRecallCore.backHTML(store, card), {
+					onReset: () => ZotRecallCore.backHTML(store, Object.assign({}, card, { back: undefined })),
+				});
+				face = h(doc, 'div', { class: 'zr-card zr-editing' },
+					h(doc, 'div', { class: 'zr-edit-label', text: 'Domanda' }), questionBox,
+					h(doc, 'div', { class: 'zr-edit-label', text: 'Risposta' }), editor.node);
 			}
 			else {
-				question = h(doc, 'div', { class: 'zr-card-q', text: card.question });
-			}
-			let face = h(doc, 'div', { class: 'zr-card' + (editing ? ' zr-editing' : ''), tabindex: '0', title: editing ? null : 'Clic o spazio per girare' }, question);
-			if (flipped || editing) {
-				let backNode = h(doc, 'div', { class: 'zr-card-back' });
-				for (let key of card.sentenceKeys) {
-					let s = store.sentences[key];
-					if (s) backNode.append(h(doc, 'div', { class: 'zr-sentence' }, this.sentenceNode(doc, s)));
+				face = h(doc, 'div', { class: 'zr-card', tabindex: '0', title: 'Clic o spazio per girare' },
+					h(doc, 'div', { class: 'zr-card-q', text: card.question }));
+				if (flipped) {
+					let back = h(doc, 'div', { class: 'zr-card-back zr-rich' });
+					back.innerHTML = this.sanitizeHTML(doc, ZotRecallCore.backHTML(store, card));
+					face.append(back);
 				}
-				face.append(backNode);
-			}
-			if (!editing) {
 				face.addEventListener('click', () => {
 					flipped = !flipped;
 					render();
@@ -662,21 +784,24 @@ var ZotRecallUI = {
 				}
 			});
 			let badges = [];
+			if (state === 'sent') badges.push(h(doc, 'span', { class: 'zr-tag zr-tag-ok', text: 'in Anki', title: card.ankiDeck ? 'Mazzo: ' + card.ankiDeck : null }));
+			if (state === 'changed') badges.push(h(doc, 'span', { class: 'zr-tag zr-tag-warn', text: 'cambiata dopo l\'invio' }));
 			if (card.edited) badges.push(h(doc, 'span', { class: 'zr-tag', text: 'modificata' }));
 			if (isOrphan) badges.push(h(doc, 'span', { class: 'zr-tag zr-tag-warn', text: 'orfana', title: 'Il periodo non è più evidenziato' }));
 
 			let actions;
 			if (editing) {
-				let cancel = h(doc, 'button', { class: 'zr-btn', text: 'Annulla' });
-				cancel.addEventListener('click', () => {
+				let cancel = h(doc, 'button', { class: 'zr-btn', text: 'Annulla', onclick: () => {
 					editing = false;
 					render();
-				});
+				} });
 				let ok = h(doc, 'button', { class: 'zr-btn zr-primary', text: 'Salva' });
 				ok.addEventListener('click', async () => {
-					let text = question.value.trim();
+					let text = questionBox.value.trim();
 					if (!text) return;
-					ZotRecallCore.editCard(store, card.id, text);
+					let original = ZotRecallCore.backHTML(store, Object.assign({}, card, { back: undefined }));
+					let back = this.sanitizeHTML(doc, editor.getHTML());
+					ZotRecallCore.editCard(store, card.id, text, back === this.sanitizeHTML(doc, original) ? null : back);
 					editing = false;
 					render();
 					await save();
@@ -684,43 +809,52 @@ var ZotRecallUI = {
 				actions = h(doc, 'div', { class: 'zr-footer' }, cancel, ok);
 			}
 			else {
-				let prev = h(doc, 'button', { class: 'zr-btn', text: '←', title: 'Precedente', disabled: index === 0, onclick: () => move(-1) });
-				let next = h(doc, 'button', { class: 'zr-btn', text: '→', title: 'Successiva', disabled: index === cards.length - 1, onclick: () => move(1) });
-				let edit = h(doc, 'button', { class: 'zr-btn', text: 'Modifica' });
-				edit.addEventListener('click', () => {
-					editing = true;
-					render();
+				let sendLabel = sending ? 'Invio…' : state === 'sent' ? 'Inviata ✓' : state === 'changed' ? 'Aggiorna' : 'Invia';
+				let sendBtn = h(doc, 'button', {
+					class: 'zr-btn zr-primary',
+					text: sendLabel,
+					disabled: sending || state === 'sent',
+					title: state === 'sent' ? 'Questa carta è già in Anki, identica' : state === 'changed' ? 'Aggiorna la nota già in Anki' : 'Invia questa carta ad Anki',
+					onclick: () => send(card),
 				});
-				let discard = h(doc, 'button', { class: 'zr-btn zr-danger', text: 'Scarta' });
-				discard.addEventListener('click', async () => {
-					ZotRecallCore.setCardStatus(store, card.id, 'discarded');
-					cards.splice(index, 1);
-					index = Math.min(index, cards.length - 1);
-					flipped = false;
-					render();
-					await save();
-				});
-				actions = h(doc, 'div', { class: 'zr-footer', style: { justifyContent: 'space-between' } },
-					prev,
-					h(doc, 'div', { class: 'zr-row' }, edit, discard,
+				actions = h(doc, 'div', { class: 'zr-footer zr-session' },
+					h(doc, 'button', { class: 'zr-btn', text: '←', title: 'Precedente (←)', disabled: index === 0, onclick: () => move(-1) }),
+					h(doc, 'div', { class: 'zr-row zr-wrap' },
+						h(doc, 'button', { class: 'zr-btn', text: 'Modifica', onclick: () => {
+							editing = true;
+							say('');
+							render();
+						} }),
+						h(doc, 'button', { class: 'zr-btn zr-danger', text: 'Scarta', onclick: async () => {
+							ZotRecallCore.setCardStatus(store, card.id, 'discarded');
+							cards.splice(index, 1);
+							index = Math.min(index, cards.length - 1);
+							flipped = false;
+							say(card.ankiNoteId ? 'Scartata. La nota già in Anki non viene toccata.' : '');
+							render();
+							await save();
+						} }),
 						h(doc, 'button', { class: 'zr-btn', text: flipped ? 'Domanda' : 'Gira', onclick: () => {
 							flipped = !flipped;
 							render();
-						} })),
-					next);
+						} }),
+						sendBtn),
+					h(doc, 'button', { class: 'zr-btn', text: '→', title: 'Successiva (→)', disabled: index === cards.length - 1, onclick: () => move(1) }));
 			}
+			let sentCount = cards.filter(c => ZotRecallCore.ankiState(store, c, tags) === 'sent').length;
 			body.replaceChildren(
 				h(doc, 'div', { class: 'zr-meta-row' },
 					h(doc, 'span', {}, `${index + 1} di ${cards.length} `, ...badges),
 					pageLink),
 				face,
 				actions,
-				error);
-			if (editing) question.focus();
+				message,
+				h(doc, 'p', { class: 'zr-note zr-center', text: `${sentCount} di ${cards.length} già in Anki · spazio gira, ← → per scorrere` }));
+			if (editing) questionBox.focus();
 			else face.focus();
 		};
 		popup._zrKeys = (e) => {
-			if (!cards.length || editing || ['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return false;
+			if (!cards.length || editing || ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName) || e.target.isContentEditable) return false;
 			if (e.key === ' ') {
 				flipped = !flipped;
 				render();
@@ -731,6 +865,127 @@ var ZotRecallUI = {
 			return true;
 		};
 		render();
+	},
+
+	/**
+	 * Minimal rich text editor: bold, italic, underline, highlight colors
+	 * (hidden until needed), reset to the original back.
+	 * @returns {{node, getHTML}}
+	 */
+	richEditor(doc, html, { onReset } = {}) {
+		let h = this.h.bind(this);
+		let area = h(doc, 'div', { class: 'zr-rich zr-rich-edit', contenteditable: 'true', spellcheck: 'false' });
+		area.innerHTML = this.sanitizeHTML(doc, html);
+		let exec = (cmd, value = null, css = false) => {
+			area.focus();
+			try {
+				doc.execCommand('styleWithCSS', false, css);
+			}
+			catch (e) {}
+			doc.execCommand(cmd, false, value);
+		};
+		// Keep the selection when clicking toolbar buttons
+		let tool = (label, title, fn, cls = '') => h(doc, 'button', {
+			class: 'zr-tool ' + cls,
+			title,
+			type: 'button',
+			onmousedown: e => e.preventDefault(),
+			onclick: fn,
+		}, label);
+		// Highlight by wrapping the selection: same result in every engine
+		let highlight = (color) => {
+			let sel = doc.getSelection();
+			if (!sel || !sel.rangeCount) return;
+			let r = sel.getRangeAt(0);
+			if (r.collapsed || !area.contains(r.commonAncestorContainer)) return;
+			let frag = r.extractContents();
+			frag.querySelectorAll('span').forEach((sp) => {
+				sp.style.backgroundColor = '';
+			});
+			let node = frag;
+			if (color) {
+				node = doc.createElement('span');
+				node.style.backgroundColor = color;
+				node.append(frag);
+			}
+			let last = node.lastChild;
+			r.insertNode(node);
+			sel.removeAllRanges();
+			let after = doc.createRange();
+			if (color) after.selectNodeContents(node);
+			else if (last) after.setStartAfter(last);
+			sel.addRange(after);
+			area.focus();
+		};
+		let colors = h(doc, 'div', { class: 'zr-colors', hidden: true },
+			...ZotRecallCore.ZOTERO_COLORS.map(c => tool('', c.name, () => {
+				highlight(c.hex);
+				colors.hidden = true;
+			}, 'zr-color-dot')),
+			tool('⌀', 'Togli evidenziazione', () => {
+				highlight(null);
+				colors.hidden = true;
+			}, 'zr-color-none'));
+		ZotRecallCore.ZOTERO_COLORS.forEach((c, i) => {
+			colors.children[i].style.backgroundColor = c.hex;
+		});
+		let bar = h(doc, 'div', { class: 'zr-toolbar' },
+			tool(h(doc, 'b', { text: 'B' }), 'Grassetto (⌘B)', () => exec('bold')),
+			tool(h(doc, 'i', { text: 'I' }), 'Corsivo (⌘I)', () => exec('italic')),
+			tool(h(doc, 'u', { text: 'U' }), 'Sottolineato (⌘U)', () => exec('underline')),
+			tool(h(doc, 'span', { class: 'zr-hl-icon', text: 'A' }), 'Evidenzia', () => {
+				colors.hidden = !colors.hidden;
+			}),
+			colors,
+			onReset ? tool('↺', 'Ripristina il periodo originale', () => {
+				area.innerHTML = this.sanitizeHTML(doc, onReset());
+			}, 'zr-tool-reset') : null);
+		return {
+			node: h(doc, 'div', { class: 'zr-rich-wrap' }, bar, area),
+			getHTML: () => area.innerHTML,
+		};
+	},
+
+	/**
+	 * Keep only simple formatting: b, i, u, br, div and spans with a
+	 * background color or basic font styles. Everything else is unwrapped.
+	 */
+	sanitizeHTML(doc, html) {
+		let tpl = doc.createElement('template');
+		tpl.innerHTML = String(html || '');
+		let out = doc.createElement('div');
+		let ALLOWED = { B: 'b', STRONG: 'b', I: 'i', EM: 'i', U: 'u', BR: 'br', DIV: 'div', P: 'div', SPAN: 'span' };
+		let walk = (src, dst) => {
+			for (let n of Array.from(src.childNodes)) {
+				if (n.nodeType === 3) {
+					dst.append(doc.createTextNode(n.textContent));
+					continue;
+				}
+				if (n.nodeType !== 1) continue;
+				let tag = ALLOWED[n.tagName.toUpperCase()];
+				if (!tag) {
+					walk(n, dst);
+					continue;
+				}
+				let el = doc.createElement(tag);
+				if (tag === 'span') {
+					let st = n.style;
+					let bg = st.backgroundColor;
+					if (bg && bg !== 'transparent' && !/rgba\(.*,\s*0\)/.test(bg)) el.style.backgroundColor = bg;
+					if (/bold|[6-9]00/.test(st.fontWeight)) el.style.fontWeight = 'bold';
+					if (st.fontStyle === 'italic') el.style.fontStyle = 'italic';
+					if (/underline/.test(st.textDecoration || st.textDecorationLine || '')) el.style.textDecoration = 'underline';
+					if (!el.getAttribute('style')) {
+						walk(n, dst);
+						continue;
+					}
+				}
+				walk(n, el);
+				dst.append(el);
+			}
+		};
+		walk(tpl.content, out);
+		return out.innerHTML;
 	},
 
 	// ------------------------------------------------------------------
@@ -803,13 +1058,215 @@ var ZotRecallUI = {
 	},
 
 	// ------------------------------------------------------------------
-	// Export
+	// Anki: deck form, export / batch send, sent cards
 	// ------------------------------------------------------------------
 
+	/**
+	 * Deck (pick from the list or type a new "Parent::Child" path), note type,
+	 * fields and tags. Starts from the saved default.
+	 * @returns {Promise<{node, getCfg, isNewDeck, onChange}>}
+	 */
+	async ankiForm(doc) {
+		let h = this.h.bind(this);
+		let cfg = this.app.getAnkiConfig();
+		let options = await this.app.ankiOptions();
+		let listeners = [];
+		let changed = () => listeners.forEach(fn => fn());
+
+		// Deck combobox
+		let deckInput = h(doc, 'input', { type: 'text', class: 'zr-input', placeholder: 'Mazzo genitore::Mazzo figlio', spellcheck: 'false' });
+		deckInput.value = cfg.deck || '';
+		let list = h(doc, 'div', { class: 'zr-combo-list', hidden: true, role: 'listbox' });
+		let fill = (filter) => {
+			let q = String(filter || '').toLowerCase();
+			let decks = options.decks.filter(d => !q || d.toLowerCase().includes(q));
+			list.replaceChildren(...decks.slice(0, 200).map(d => h(doc, 'div', {
+				class: 'zr-combo-item' + (d === deckInput.value ? ' current' : ''),
+				role: 'option',
+				onmousedown: (e) => {
+					e.preventDefault();
+					deckInput.value = d;
+					list.hidden = true;
+					changed();
+				},
+			}, ...d.split('::').flatMap((part, i, all) => i < all.length - 1
+				? [h(doc, 'span', { class: 'zr-combo-parent', text: part + '::' })]
+				: [part]))));
+			if (!decks.length) list.append(h(doc, 'div', { class: 'zr-combo-empty', text: 'Nessun mazzo con questo nome: verrà creato.' }));
+		};
+		let toggle = h(doc, 'button', {
+			class: 'zr-combo-toggle',
+			type: 'button',
+			title: 'Mostra i mazzi',
+			onmousedown: e => e.preventDefault(),
+			onclick: () => {
+				if (list.hidden) {
+					fill('');
+					list.hidden = false;
+					deckInput.focus();
+				}
+				else list.hidden = true;
+			},
+		}, '▾');
+		deckInput.addEventListener('input', () => {
+			fill(deckInput.value);
+			list.hidden = false;
+			changed();
+		});
+		deckInput.addEventListener('blur', () => {
+			list.hidden = true;
+		});
+		deckInput.addEventListener('keydown', (e) => {
+			if (e.key === 'Escape' && !list.hidden) {
+				list.hidden = true;
+				e.stopPropagation();
+			}
+		});
+		let deckHint = h(doc, 'p', { class: 'zr-note zr-deck-hint', hidden: true });
+
+		// Note type and fields
+		let defaultModel = options.models.includes(cfg.model) ? cfg.model
+			: (options.models.find(m => /^(basic|base)$/i.test(m)) || options.models[0]);
+		let modelSel = h(doc, 'select', { class: 'zr-select' },
+			...options.models.map(m => h(doc, 'option', { value: m, text: m, selected: m === defaultModel })));
+		let frontSel = h(doc, 'select', { class: 'zr-select' });
+		let backSel = h(doc, 'select', { class: 'zr-select' });
+		let loadFields = async () => {
+			let fields = [];
+			try {
+				fields = await this.app.ankiFields(modelSel.value);
+			}
+			catch (e) {
+				Zotero.logError(e);
+			}
+			let pick = (sel, preferred, fallbackIndex) => {
+				let value = fields.includes(preferred) ? preferred : fields[Math.min(fallbackIndex, fields.length - 1)];
+				sel.replaceChildren(...fields.map(f => h(doc, 'option', { value: f, text: f, selected: f === value })));
+			};
+			pick(frontSel, cfg.front, 0);
+			pick(backSel, cfg.back, 1);
+			changed();
+		};
+		modelSel.addEventListener('change', loadFields);
+		frontSel.addEventListener('change', changed);
+		backSel.addEventListener('change', changed);
+		await loadFields();
+
+		let tagsInput = h(doc, 'input', { type: 'text', class: 'zr-input', placeholder: 'Nessun tag (es. patologia::emostasi zotrecall)', spellcheck: 'false' });
+		tagsInput.value = cfg.tags || '';
+		tagsInput.addEventListener('input', changed);
+
+		let isNewDeck = () => {
+			let d = deckInput.value.trim();
+			return !!d && !options.decks.includes(d);
+		};
+		listeners.push(() => {
+			let d = deckInput.value.trim();
+			deckHint.hidden = !isNewDeck();
+			if (isNewDeck()) {
+				let parts = d.split('::');
+				let parent = parts.slice(0, -1).join('::');
+				deckHint.textContent = parts.some(p => !p.trim())
+					? 'Nome non valido: usa "Mazzo genitore::Mazzo figlio".'
+					: `Nuovo mazzo "${parts[parts.length - 1]}"` + (parent ? ` dentro "${parent}"` : '') + '.';
+			}
+		});
+		changed();
+
+		let field = (label, ...input) => h(doc, 'label', { class: 'zr-field' }, h(doc, 'span', { text: label }), ...input);
+		let node = h(doc, 'div', {},
+			h(doc, 'div', { class: 'zr-field' }, h(doc, 'span', { text: 'Mazzo' }),
+				h(doc, 'div', { class: 'zr-combo' }, deckInput, toggle, list),
+				deckHint),
+			field('Tipo di nota', modelSel),
+			h(doc, 'div', { class: 'zr-row', style: { alignItems: 'flex-start' } },
+				h(doc, 'div', { style: { flex: '1' } }, field('Campo fronte', frontSel)),
+				h(doc, 'div', { style: { flex: '1' } }, field('Campo retro', backSel))),
+			field('Tag', tagsInput),
+			h(doc, 'p', { class: 'zr-note', style: { marginTop: '-6px' }, text: 'Separati da spazi, "::" per i tag figli. Vuoto per nessun tag.' }));
+		return {
+			node,
+			getCfg: () => ({
+				deck: deckInput.value.trim(),
+				model: modelSel.value,
+				front: frontSel.value,
+				back: backSel.value,
+				tags: tagsInput.value,
+			}),
+			isNewDeck,
+			onChange: fn => listeners.push(fn),
+			addDeck: (d) => {
+				if (!options.decks.includes(d)) options.decks.push(d);
+				changed();
+			},
+		};
+	},
+
+	ankiUnavailable(doc, e) {
+		return this.h(doc, 'p', { class: 'zr-error', text: (e.message || String(e)) + '\nControlla che Anki sia aperto e l\'indirizzo di AnkiConnect nelle impostazioni.' });
+	},
+
+	/** Default deck, note type, fields and tags (Strumenti → ZotRecall → Mazzo Anki). */
+	async showAnkiConfig(reader, doc, popup, onDone = null) {
+		let h = this.h.bind(this);
+		let back = onDone || (() => (reader ? this.showMain(reader, doc, popup) : popup._zrClose()));
+		let body = h(doc, 'div', { class: 'zr-body' }, h(doc, 'p', { class: 'zr-note', text: 'Connessione ad Anki…' }));
+		this.setView(popup, this.header(doc, popup, 'Mazzo Anki', { onBack: back }), body);
+		let form;
+		try {
+			form = await this.ankiForm(doc);
+		}
+		catch (e) {
+			body.replaceChildren(this.ankiUnavailable(doc, e));
+			return;
+		}
+		let status = h(doc, 'p', { class: 'zr-note', hidden: true });
+		let saveBtn = h(doc, 'button', { class: 'zr-btn zr-primary' });
+		let update = () => {
+			saveBtn.textContent = form.isNewDeck() ? 'Crea mazzo e salva' : 'Salva come predefinito';
+		};
+		form.onChange(update);
+		update();
+		saveBtn.addEventListener('click', async () => {
+			let cfg = form.getCfg();
+			let err = this.app.ankiConfigError(cfg);
+			if (err) {
+				status.className = 'zr-error';
+				status.textContent = err;
+				status.hidden = false;
+				return;
+			}
+			try {
+				if (form.isNewDeck()) {
+					await this.app.createDeck(cfg.deck);
+					form.addDeck(cfg.deck);
+				}
+				this.app.saveAnkiConfig(cfg);
+				status.className = 'zr-ok';
+				status.textContent = `Salvato. "Invia" userà il mazzo "${cfg.deck}".`;
+				status.hidden = false;
+				if (onDone) onDone();
+			}
+			catch (e) {
+				Zotero.logError(e);
+				status.className = 'zr-error';
+				status.textContent = e.message || String(e);
+				status.hidden = false;
+			}
+		});
+		body.replaceChildren(
+			h(doc, 'p', { class: 'zr-note', style: { margin: '0 0 12px' }, text: 'Usato dal bottone "Invia" dell\'anteprima e dall\'invio in blocco.' }),
+			form.node,
+			h(doc, 'div', { class: 'zr-footer' }, saveBtn),
+			status);
+	},
+
+	/** CSV export and batch send to Anki (only new or changed cards). */
 	async showExport(reader, doc, popup) {
 		let h = this.h.bind(this);
 		let attachment = this.app.getAttachment(reader);
-		let count = ZotRecallCore.activeCards(this.app.loadStore(attachment)).length;
+		let store = this.app.loadStore(attachment);
+		let count = ZotRecallCore.activeCards(store).length;
 		let back = () => this.showMain(reader, doc, popup);
 		let csvStatus = h(doc, 'p', { class: 'zr-note' });
 		let csvBtn = h(doc, 'button', { class: 'zr-btn', text: 'Salva CSV…' });
@@ -837,102 +1294,143 @@ var ZotRecallUI = {
 			csvStatus,
 			h(doc, 'div', { class: 'zr-section', text: 'Anki (AnkiConnect)' }),
 			ankiBox);
-		this.setView(popup, this.header(doc, popup, 'Esporta', { onBack: back }), body);
+		this.setView(popup, this.header(doc, popup, 'Esporta o invia in blocco', { onBack: back }), body);
 
-		let options;
+		let form;
 		try {
-			options = await this.app.ankiOptions();
+			form = await this.ankiForm(doc);
 		}
 		catch (e) {
-			ankiBox.replaceChildren(h(doc, 'p', { class: 'zr-error', text: (e.message || String(e)) + ' Controlla che Anki sia aperto e l\'indirizzo nelle impostazioni.' }));
+			ankiBox.replaceChildren(this.ankiUnavailable(doc, e));
 			return;
 		}
-		let NEW = '__new__';
-		let lastDeck = this.app.getPref('lastDeck');
-		let lastModel = this.app.getPref('lastModel');
-		let lastFields = this.app.getJSONPref('lastFields', []);
-		let deckSel = h(doc, 'select', { class: 'zr-select' },
-			...options.decks.map(d => h(doc, 'option', { value: d, text: d, selected: d === lastDeck })),
-			h(doc, 'option', { value: NEW, text: 'Nuovo mazzo…' }));
-		let newDeck = h(doc, 'input', { type: 'text', placeholder: 'Nome del nuovo mazzo (usa :: per i sottomazzi)', hidden: true });
-		deckSel.addEventListener('change', () => {
-			newDeck.hidden = deckSel.value !== NEW;
-			if (!newDeck.hidden) newDeck.focus();
-		});
-		let defaultModel = options.models.includes(lastModel) ? lastModel
-			: (options.models.find(m => /^(basic|base)$/i.test(m)) || options.models[0]);
-		let modelSel = h(doc, 'select', { class: 'zr-select' },
-			...options.models.map(m => h(doc, 'option', { value: m, text: m, selected: m === defaultModel })));
-		let frontSel = h(doc, 'select', { class: 'zr-select' });
-		let backSel = h(doc, 'select', { class: 'zr-select' });
-		let loadFields = async () => {
-			let fields = [];
-			try {
-				fields = await this.app.ankiFields(modelSel.value);
-			}
-			catch (e) {
-				Zotero.logError(e);
-			}
-			let pick = (sel, preferred, fallbackIndex) => {
-				let value = fields.includes(preferred) ? preferred : fields[Math.min(fallbackIndex, fields.length - 1)];
-				sel.replaceChildren(...fields.map(f => h(doc, 'option', { value: f, text: f, selected: f === value })));
-			};
-			pick(frontSel, lastFields[0], 0);
-			pick(backSel, lastFields[1], 1);
-		};
-		modelSel.addEventListener('change', loadFields);
-		await loadFields();
-
+		let summary = h(doc, 'p', { class: 'zr-note', style: { marginTop: '0' } });
 		let status = h(doc, 'p', { class: 'zr-note' });
 		let bar = h(doc, 'div', { class: 'zr-bar', hidden: true }, h(doc, 'div', { class: 'zr-bar-fill' }));
-		let send = h(doc, 'button', { class: 'zr-btn zr-primary', text: 'Invia ad Anki' });
-		send.addEventListener('click', async () => {
-			let deck = deckSel.value === NEW ? newDeck.value.trim() : deckSel.value;
-			if (!deck) {
-				status.className = 'zr-error';
-				status.textContent = 'Scegli o scrivi il nome del mazzo.';
-				return;
+		let sendBtn = h(doc, 'button', { class: 'zr-btn zr-primary' });
+		let saveBtn = h(doc, 'button', { class: 'zr-btn' });
+		let pending = 0;
+		let update = () => {
+			let cfg = form.getCfg();
+			let tags = ZotRecallCore.parseTags(cfg.tags);
+			let cards = ZotRecallCore.activeCards(store);
+			let n = { new: 0, changed: 0, sent: 0 };
+			cards.forEach(c => n[ZotRecallCore.ankiState(store, c, tags)]++);
+			pending = n.new + n.changed;
+			summary.textContent = `${n.new} nuove · ${n.changed} cambiate dopo l'invio · ${n.sent} già in Anki, identiche (saltate).`;
+			let isNew = form.isNewDeck();
+			sendBtn.textContent = (isNew ? 'Crea mazzo e invia' : 'Invia') + (pending ? ` ${pending} carte` : '');
+			sendBtn.disabled = !pending;
+			saveBtn.textContent = isNew ? 'Crea mazzo e salva' : 'Salva come predefinito';
+		};
+		form.onChange(update);
+		update();
+		let fail = (e) => {
+			Zotero.logError(e);
+			status.className = 'zr-error';
+			status.textContent = e.message || String(e);
+		};
+		saveBtn.addEventListener('click', async () => {
+			let cfg = form.getCfg();
+			let err = this.app.ankiConfigError(cfg);
+			if (err) return fail(new Error(err));
+			try {
+				if (form.isNewDeck()) {
+					await this.app.createDeck(cfg.deck);
+					form.addDeck(cfg.deck);
+				}
+				this.app.saveAnkiConfig(cfg);
+				status.className = 'zr-ok';
+				status.textContent = `"${cfg.deck}" è ora il mazzo predefinito.`;
 			}
-			if (!frontSel.value || !backSel.value || frontSel.value === backSel.value) {
-				status.className = 'zr-error';
-				status.textContent = 'Scegli due campi diversi per fronte e retro.';
-				return;
+			catch (e) {
+				fail(e);
 			}
-			send.disabled = true;
+		});
+		sendBtn.addEventListener('click', async () => {
+			let cfg = form.getCfg();
+			let err = this.app.ankiConfigError(cfg);
+			if (err) return fail(new Error(err));
+			sendBtn.disabled = true;
 			bar.hidden = false;
 			status.className = 'zr-note';
 			status.textContent = 'Invio in corso…';
 			try {
-				let res = await this.app.exportToAnki(attachment, {
-					deck,
-					model: modelSel.value,
-					frontField: frontSel.value,
-					backField: backSel.value,
+				let res = await this.app.sendToAnki(attachment, {
+					cfg,
 					onProgress: (done, total) => {
 						bar.firstChild.style.width = Math.round(done / total * 100) + '%';
 					},
 				});
+				form.addDeck(cfg.deck);
+				store = this.app.loadStore(attachment);
 				status.className = res.failed.length ? 'zr-error' : 'zr-ok';
-				status.textContent = `${res.added} carte aggiunte e ${res.updated} aggiornate nel mazzo "${deck}".`
+				status.textContent = `${res.added} carte aggiunte e ${res.updated} aggiornate nel mazzo "${cfg.deck}", ${res.skipped} già identiche.`
 					+ (res.failed.length ? `\n${res.failed.length} non inviate. Prima: ${res.failed[0]}` : '');
 			}
 			catch (e) {
-				Zotero.logError(e);
-				status.className = 'zr-error';
-				status.textContent = e.message || String(e);
+				fail(e);
 			}
-			send.disabled = false;
+			update();
 		});
-		let field = (label, ...input) => h(doc, 'label', { class: 'zr-field' }, h(doc, 'span', { text: label }), ...input);
-		ankiBox.replaceChildren(
-			field('Mazzo', deckSel, newDeck),
-			field('Tipo di nota', modelSel),
-			h(doc, 'div', { class: 'zr-row', style: { alignItems: 'flex-start' } },
-				h(doc, 'div', { style: { flex: '1' } }, field('Campo fronte', frontSel)),
-				h(doc, 'div', { style: { flex: '1' } }, field('Campo retro', backSel))),
-			h(doc, 'p', { class: 'zr-note', style: { marginTop: '0' }, text: 'Le carte già inviate vengono aggiornate, non duplicate.' }),
-			bar,
-			h(doc, 'div', { class: 'zr-footer' }, send),
+		ankiBox.replaceChildren(form.node, summary, bar,
+			h(doc, 'div', { class: 'zr-footer' }, saveBtn, sendBtn), status);
+	},
+
+	/** Cards already in Anki, and the ones changed since. */
+	showSent(reader, doc, popup) {
+		let h = this.h.bind(this);
+		let attachment = this.app.getAttachment(reader);
+		let store = this.app.loadStore(attachment);
+		let tags = ZotRecallCore.parseTags(this.app.getAnkiConfig().tags);
+		let cards = ZotRecallCore.activeCards(store);
+		let sent = cards.filter(c => c.ankiNoteId);
+		let changed = sent.filter(c => ZotRecallCore.ankiState(store, c, tags) === 'changed');
+		let body = h(doc, 'div', { class: 'zr-body' });
+		this.setView(popup, this.header(doc, popup, 'Carte inviate ad Anki', { onBack: () => this.showMain(reader, doc, popup) }), body);
+		let status = h(doc, 'p', { class: 'zr-note', hidden: true });
+		let rows = sent.map((c) => {
+			let state = ZotRecallCore.ankiState(store, c, tags);
+			let when = c.sentAt ? new Date(c.sentAt).toLocaleString() : '';
+			return h(doc, 'button', {
+				class: 'zr-sent-row',
+				title: 'Apri nell\'anteprima',
+				onclick: () => this.showPreview(reader, doc, popup, { cardID: c.id }),
+			},
+			h(doc, 'div', { class: 'zr-sent-q', text: c.question }),
+			h(doc, 'div', { class: 'zr-meta' },
+				state === 'changed' ? h(doc, 'span', { class: 'zr-tag zr-tag-warn', text: 'cambiata dopo l\'invio' }) : h(doc, 'span', { class: 'zr-tag zr-tag-ok', text: 'in Anki' }),
+				` ${c.ankiDeck || ''} · ${when} · pag. ${(c.pageIndex ?? 0) + 1}`));
+		});
+		let actions = [];
+		if (changed.length) {
+			let btn = h(doc, 'button', { class: 'zr-btn zr-primary', text: `Aggiorna le ${changed.length} cambiate` });
+			btn.addEventListener('click', async () => {
+				btn.disabled = true;
+				try {
+					let res = await this.app.sendToAnki(attachment, { cardIDs: changed.map(c => c.id) });
+					status.className = res.failed.length ? 'zr-error' : 'zr-ok';
+					status.textContent = `${res.updated + res.added} carte aggiornate.` + (res.failed.length ? ` Errore: ${res.failed[0]}` : '');
+					status.hidden = false;
+					this.showSent(reader, doc, popup);
+				}
+				catch (e) {
+					Zotero.logError(e);
+					status.className = 'zr-error';
+					status.textContent = e.message || String(e);
+					status.hidden = false;
+					btn.disabled = false;
+				}
+			});
+			actions.push(btn);
+		}
+		actions.push(h(doc, 'button', { class: 'zr-btn', text: 'Esporta o invia in blocco…', onclick: () => this.showExport(reader, doc, popup) }));
+		body.append(
+			h(doc, 'p', { style: { margin: '0 0 10px' }, text: sent.length
+				? `${sent.length} di ${cards.length} carte sono in Anki` + (changed.length ? `, ${changed.length} cambiate da allora.` : ', tutte aggiornate.')
+				: 'Nessuna carta di questo PDF è ancora in Anki.' }),
+			...rows,
+			h(doc, 'div', { class: 'zr-footer' }, ...actions),
 			status);
 	},
 
@@ -988,6 +1486,8 @@ var ZotRecallUI = {
 		let ankiKey = h(doc, 'input', { type: 'password', value: s.ankiKey, placeholder: 'Facoltativa', autocomplete: 'off' });
 		let ankiStatus = h(doc, 'p', { class: 'zr-note' });
 		let ankiTest = h(doc, 'button', { class: 'zr-btn', text: 'Prova connessione' });
+		let outside = h(doc, 'input', { type: 'checkbox' });
+		outside.checked = !!s.closeOnOutsideClick;
 
 		let collect = () => ({
 			model: modelInput.value,
@@ -998,6 +1498,7 @@ var ZotRecallUI = {
 			concurrency: concurrency.value,
 			ankiURL: ankiURL.value,
 			ankiKey: ankiKey.value,
+			closeOnOutsideClick: outside.checked,
 		});
 
 		ankiTest.addEventListener('click', async (e) => {
@@ -1055,9 +1556,15 @@ var ZotRecallUI = {
 			h(doc, 'div', { class: 'zr-section', text: 'Anki' }),
 			field('Indirizzo AnkiConnect', h(doc, 'div', { class: 'zr-row' }, ankiURL, ankiTest), ankiStatus),
 			field('Chiave AnkiConnect', ankiKey),
+			h(doc, 'button', { class: 'zr-link', text: 'Mazzo, tipo di nota e tag predefiniti…', onclick: (e) => {
+				e.preventDefault();
+				this.showAnkiConfig(reader, doc, popup, () => this.showSettings(reader, doc, popup));
+			} }),
+			h(doc, 'div', { class: 'zr-section', text: 'Finestra' }),
+			h(doc, 'label', { class: 'zr-color-row' }, outside, 'Chiudi la finestra cliccando fuori'),
 			h(doc, 'div', { class: 'zr-footer' }, save),
 			saveStatus);
 
-		this.setView(popup, this.header(doc, popup, 'Impostazioni', { onBack: () => this.showMain(reader, doc, popup) }), body);
+		this.setView(popup, this.header(doc, popup, 'Impostazioni', { onBack: () => (reader ? this.showMain(reader, doc, popup) : popup._zrClose()) }), body);
 	},
 };
