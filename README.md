@@ -47,6 +47,7 @@ Le finestre si aprono al centro, si spostano trascinando la barra del titolo e s
 ```sh
 npm test          # test della logica (Node 22+, nessuna dipendenza)
 npm run build     # crea build/zotrecall-<versione>.xpi
+scripts/publish.sh  # pubblica l'xpi come aggiornamento automatico (branch releases + updates.json su main)
 ```
 
 Struttura:
