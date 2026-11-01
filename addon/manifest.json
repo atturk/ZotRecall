@@ -1,0 +1,15 @@
+{
+	"manifest_version": 2,
+	"name": "ZotRecall",
+	"version": "0.1.0",
+	"description": "Genera domande di recall (carte Anki) dalle evidenziazioni dei PDF con un LLM via OpenRouter.",
+	"author": "Attilio",
+	"homepage_url": "https://github.com/atturk/ZotRecall",
+	"applications": {
+		"zotero": {
+			"id": "zotrecall@atturk.github.io",
+			"strict_min_version": "10.0",
+			"strict_max_version": "10.*"
+		}
+	}
+}
