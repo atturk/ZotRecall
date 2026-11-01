@@ -160,6 +160,8 @@ var ZotRecallUI = {
 .zr-card.zr-editing { cursor: default; }
 .zr-trash-q { font-weight: 600; }
 #zotrecall-popup [hidden] { display: none !important; }
+.zr-select { width: 100%; padding: 5px 6px; border: 1px solid var(--zr-border); border-radius: 6px; background: var(--zr-field); color: var(--zr-fg); font: inherit; }
+.zr-field input[type=text] + * , .zr-field select + input { margin-top: 6px; }
 .zr-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 `;
 		(doc.head || doc.documentElement).append(style);
@@ -321,7 +323,12 @@ var ZotRecallUI = {
 					disabled: !active,
 					onclick: () => this.showPreview(reader, doc, popup),
 				}),
-				this.action(doc, { label: 'Esporta (CSV o Anki)', sub: 'Disponibile nella prossima versione', disabled: true }),
+				this.action(doc, {
+					label: 'Esporta (CSV o Anki)',
+					sub: active ? 'Solo le carte attive, mai quelle scartate' : 'Nessuna carta da esportare',
+					disabled: !active,
+					onclick: () => this.showExport(reader, doc, popup),
+				}),
 				this.action(doc, {
 					label: 'Mostra i periodi estratti di questa pagina',
 					sub: 'Verifica cosa riceverà il modello',
@@ -710,6 +717,140 @@ var ZotRecallUI = {
 				error);
 		};
 		render();
+	},
+
+	// ------------------------------------------------------------------
+	// Export
+	// ------------------------------------------------------------------
+
+	async showExport(reader, doc, popup) {
+		let h = this.h.bind(this);
+		let attachment = this.app.getAttachment(reader);
+		let count = ZotRecallCore.activeCards(this.app.loadStore(attachment)).length;
+		let back = () => this.showMain(reader, doc, popup);
+		let csvStatus = h(doc, 'p', { class: 'zr-note' });
+		let csvBtn = h(doc, 'button', { class: 'zr-btn', text: 'Salva CSV…' });
+		csvBtn.addEventListener('click', async () => {
+			try {
+				let res = await this.app.exportCSV(reader, attachment);
+				if (res) {
+					csvStatus.className = 'zr-ok';
+					csvStatus.textContent = `${res.count} carte salvate. In Anki, durante l'importazione, attiva "Consenti HTML".`;
+				}
+			}
+			catch (e) {
+				Zotero.logError(e);
+				csvStatus.className = 'zr-error';
+				csvStatus.textContent = e.message || String(e);
+			}
+		});
+
+		let ankiBox = h(doc, 'div', {}, h(doc, 'p', { class: 'zr-note', text: 'Connessione ad Anki…' }));
+		let body = h(doc, 'div', { class: 'zr-body' },
+			h(doc, 'p', { style: { margin: '0 0 4px' }, text: `${count} carte attive.` }),
+			h(doc, 'div', { class: 'zr-section', text: 'CSV' }),
+			h(doc, 'p', { class: 'zr-note', style: { marginTop: '0' }, text: 'Due colonne (fronte, retro), senza intestazione, in HTML.' }),
+			h(doc, 'div', { class: 'zr-row', style: { marginTop: '8px' } }, csvBtn),
+			csvStatus,
+			h(doc, 'div', { class: 'zr-section', text: 'Anki (AnkiConnect)' }),
+			ankiBox);
+		this.setView(popup, this.header(doc, popup, 'Esporta', { onBack: back }), body);
+
+		let options;
+		try {
+			options = await this.app.ankiOptions();
+		}
+		catch (e) {
+			ankiBox.replaceChildren(h(doc, 'p', { class: 'zr-error', text: (e.message || String(e)) + ' Controlla che Anki sia aperto e l\'indirizzo nelle impostazioni.' }));
+			return;
+		}
+		let NEW = '__new__';
+		let lastDeck = this.app.getPref('lastDeck');
+		let lastModel = this.app.getPref('lastModel');
+		let lastFields = this.app.getJSONPref('lastFields', []);
+		let deckSel = h(doc, 'select', { class: 'zr-select' },
+			...options.decks.map(d => h(doc, 'option', { value: d, text: d, selected: d === lastDeck })),
+			h(doc, 'option', { value: NEW, text: 'Nuovo mazzo…' }));
+		let newDeck = h(doc, 'input', { type: 'text', placeholder: 'Nome del nuovo mazzo (usa :: per i sottomazzi)', hidden: true });
+		deckSel.addEventListener('change', () => {
+			newDeck.hidden = deckSel.value !== NEW;
+			if (!newDeck.hidden) newDeck.focus();
+		});
+		let defaultModel = options.models.includes(lastModel) ? lastModel
+			: (options.models.find(m => /^(basic|base)$/i.test(m)) || options.models[0]);
+		let modelSel = h(doc, 'select', { class: 'zr-select' },
+			...options.models.map(m => h(doc, 'option', { value: m, text: m, selected: m === defaultModel })));
+		let frontSel = h(doc, 'select', { class: 'zr-select' });
+		let backSel = h(doc, 'select', { class: 'zr-select' });
+		let loadFields = async () => {
+			let fields = [];
+			try {
+				fields = await this.app.ankiFields(modelSel.value);
+			}
+			catch (e) {
+				Zotero.logError(e);
+			}
+			let pick = (sel, preferred, fallbackIndex) => {
+				let value = fields.includes(preferred) ? preferred : fields[Math.min(fallbackIndex, fields.length - 1)];
+				sel.replaceChildren(...fields.map(f => h(doc, 'option', { value: f, text: f, selected: f === value })));
+			};
+			pick(frontSel, lastFields[0], 0);
+			pick(backSel, lastFields[1], 1);
+		};
+		modelSel.addEventListener('change', loadFields);
+		await loadFields();
+
+		let status = h(doc, 'p', { class: 'zr-note' });
+		let bar = h(doc, 'div', { class: 'zr-bar', hidden: true }, h(doc, 'div', { class: 'zr-bar-fill' }));
+		let send = h(doc, 'button', { class: 'zr-btn zr-primary', text: 'Invia ad Anki' });
+		send.addEventListener('click', async () => {
+			let deck = deckSel.value === NEW ? newDeck.value.trim() : deckSel.value;
+			if (!deck) {
+				status.className = 'zr-error';
+				status.textContent = 'Scegli o scrivi il nome del mazzo.';
+				return;
+			}
+			if (!frontSel.value || !backSel.value || frontSel.value === backSel.value) {
+				status.className = 'zr-error';
+				status.textContent = 'Scegli due campi diversi per fronte e retro.';
+				return;
+			}
+			send.disabled = true;
+			bar.hidden = false;
+			status.className = 'zr-note';
+			status.textContent = 'Invio in corso…';
+			try {
+				let res = await this.app.exportToAnki(attachment, {
+					deck,
+					model: modelSel.value,
+					frontField: frontSel.value,
+					backField: backSel.value,
+					onProgress: (done, total) => {
+						bar.firstChild.style.width = Math.round(done / total * 100) + '%';
+					},
+				});
+				status.className = res.failed.length ? 'zr-error' : 'zr-ok';
+				status.textContent = `${res.added} carte aggiunte e ${res.updated} aggiornate nel mazzo "${deck}".`
+					+ (res.failed.length ? `\n${res.failed.length} non inviate. Prima: ${res.failed[0]}` : '');
+			}
+			catch (e) {
+				Zotero.logError(e);
+				status.className = 'zr-error';
+				status.textContent = e.message || String(e);
+			}
+			send.disabled = false;
+		});
+		let field = (label, ...input) => h(doc, 'label', { class: 'zr-field' }, h(doc, 'span', { text: label }), ...input);
+		ankiBox.replaceChildren(
+			field('Mazzo', deckSel, newDeck),
+			field('Tipo di nota', modelSel),
+			h(doc, 'div', { class: 'zr-row', style: { alignItems: 'flex-start' } },
+				h(doc, 'div', { style: { flex: '1' } }, field('Campo fronte', frontSel)),
+				h(doc, 'div', { style: { flex: '1' } }, field('Campo retro', backSel))),
+			h(doc, 'p', { class: 'zr-note', style: { marginTop: '0' }, text: 'Le carte già inviate vengono aggiornate, non duplicate.' }),
+			bar,
+			h(doc, 'div', { class: 'zr-footer' }, send),
+			status);
 	},
 
 	// ------------------------------------------------------------------
