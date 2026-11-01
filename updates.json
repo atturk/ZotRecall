@@ -3,6 +3,17 @@
 		"zotrecall@atturk.github.io": {
 			"updates": [
 				{
+					"version": "0.5.1",
+					"update_link": "https://raw.githubusercontent.com/atturk/ZotRecall/releases/zotrecall-0.5.1.xpi",
+					"update_hash": "sha256:5fdd757307459c7280ad20bc1034ce20594aa2476e237d4e2186d5eb365f271f",
+					"applications": {
+						"zotero": {
+							"strict_min_version": "10.0",
+							"strict_max_version": "10.*"
+						}
+					}
+				},
+				{
 					"version": "0.5.0",
 					"update_link": "https://raw.githubusercontent.com/atturk/ZotRecall/releases/zotrecall-0.5.0.xpi",
 					"update_hash": "sha256:eb6aabcdbf56b72ac9b636c93624ac8a7d60b6fc7cca489c8dc754229b30c550",
