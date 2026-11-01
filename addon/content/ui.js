@@ -722,13 +722,31 @@ var ZotRecallUI = {
 		let cfg = this.app.getAnkiConfig();
 		let tags = ZotRecallCore.parseTags(cfg.tags);
 		let fromSent = Boolean(start && typeof start === 'object' && start.fromSent);
+		let unitSentenceKeys = (start && typeof start === 'object' && Array.isArray(start.sentenceKeys) && start.sentenceKeys.length)
+			? start.sentenceKeys
+			: null;
 		let allActive = ZotRecallCore.activeCards(store);
-		let initialCards = fromSent
-			? ZotRecallCore.sentCards(store)
-			: ZotRecallCore.unsentCards(store, tags);
+		let initialCards;
+		if (unitSentenceKeys) {
+			let keySet = new Set(unitSentenceKeys);
+			initialCards = allActive.filter(c => Array.isArray(c.sentenceKeys) && c.sentenceKeys.some(k => keySet.has(k)));
+		}
+		else if (fromSent) {
+			initialCards = ZotRecallCore.sentCards(store);
+		}
+		else {
+			initialCards = ZotRecallCore.unsentCards(store, tags);
+		}
 		if (start && typeof start === 'object' && start.cardID && !initialCards.some(c => c.id === start.cardID)) {
 			let target = allActive.find(c => c.id === start.cardID);
-			if (target) initialCards = [target, ...initialCards];
+			if (target) {
+				let targetKeySet = new Set(target.sentenceKeys || []);
+				let siblings = targetKeySet.size
+					? allActive.filter(c => Array.isArray(c.sentenceKeys) && c.sentenceKeys.some(k => targetKeySet.has(k)))
+					: [target];
+				let existingIDs = new Set(initialCards.map(c => c.id));
+				initialCards = [...siblings.filter(c => !existingIDs.has(c.id)), ...initialCards];
+			}
 		}
 		let sessionIDs = new Set(initialCards.map(c => c.id));
 		let cards = initialCards;
@@ -744,7 +762,11 @@ var ZotRecallUI = {
 		let deckLink = h(doc, 'button', {
 			class: 'zr-link zr-deck-link',
 			title: 'Mazzo, tipo di nota e tag usati da "Invia"',
-			onclick: () => this.showAnkiConfig(reader, doc, popup, () => this.showPreview(reader, doc, popup, { cardID: cards[index] && cards[index].id, fromSent })),
+			onclick: () => this.showAnkiConfig(reader, doc, popup, () => this.showPreview(reader, doc, popup, {
+				cardID: cards[index] && cards[index].id,
+				fromSent,
+				sentenceKeys: unitSentenceKeys,
+			})),
 		}, cfg.deck ? '→ ' + cfg.deck : 'Scegli il mazzo');
 		let onBack = fromSent ? () => this.showSent(reader, doc, popup) : () => this.showMain(reader, doc, popup);
 		this.setView(popup, this.header(doc, popup, 'Anteprima e invio', { onBack, actions: [deckLink] }), body);
