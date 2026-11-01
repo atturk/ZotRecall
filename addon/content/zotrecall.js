@@ -24,7 +24,31 @@ var ZotRecall = {
 				Zotero.logError(e);
 			}
 		}, id);
+		this.addToOpenReaders();
 		this.log('Started ' + version);
+	},
+
+	// renderToolbar fires only when a reader tab is created, so tabs that
+	// were already open when the plugin started (restored session, fresh
+	// install, update) need the button added by hand.
+	addToOpenReaders() {
+		for (let reader of Zotero.Reader._readers || []) {
+			try {
+				let doc = reader._iframeWindow && reader._iframeWindow.document;
+				if (!doc || doc.querySelector('.zotrecall-button')) continue;
+				let container = doc.querySelector('.toolbar .end .custom-sections')
+					|| doc.querySelector('.toolbar .end');
+				if (!container) continue;
+				ZotRecallUI.onRenderToolbar({
+					reader,
+					doc,
+					append: (...nodes) => container.prepend(...nodes),
+				});
+			}
+			catch (e) {
+				Zotero.logError(e);
+			}
+		}
 	},
 
 	shutdown() {

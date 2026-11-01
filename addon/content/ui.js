@@ -172,6 +172,7 @@ var ZotRecallUI = {
 	// ------------------------------------------------------------------
 
 	onRenderToolbar({ reader, doc, append }) {
+		if (doc.querySelector('.zotrecall-button')) return;
 		this.injectStyle(doc);
 		let badge = this.h(doc, 'span', { class: 'zotrecall-badge', hidden: true });
 		let btn = this.h(doc, 'button', {
