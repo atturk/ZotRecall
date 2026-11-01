@@ -153,6 +153,13 @@ var ZotRecallUI = {
 .zr-card:focus-visible { box-shadow: 0 0 0 2px var(--zr-accent); }
 .zr-card-q { font-size: 15px; font-weight: 600; text-align: center; }
 .zr-card-back { margin-top: 14px; padding-top: 10px; border-top: 1px dashed var(--zr-border); }
+.zr-btn.zr-danger { color: var(--zr-danger); }
+.zr-tag { display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 8px; background: var(--zr-hover); font-size: 10px; }
+.zr-tag-warn { background: #fde8c8; color: #8a5300; }
+.zr-edit { width: 100%; min-height: 70px; padding: 6px 8px; border: 1px solid var(--zr-border); border-radius: 6px; background: var(--zr-field); color: var(--zr-fg); font: 600 14px/1.4 system-ui, sans-serif; resize: vertical; }
+.zr-card.zr-editing { cursor: default; }
+.zr-trash-q { font-weight: 600; }
+#zotrecall-popup [hidden] { display: none !important; }
 .zr-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 `;
 		(doc.head || doc.documentElement).append(style);
@@ -262,8 +269,17 @@ var ZotRecallUI = {
 		let attachment = this.app.getAttachment(reader);
 		let gear = this.h(doc, 'button', { class: 'zr-icon-btn', title: 'Impostazioni', onclick: () => this.showSettings(reader, doc, popup) },
 			this.svg(doc, this.ICONS.gear, 18));
-		let trash = this.h(doc, 'button', { class: 'zr-icon-btn', title: 'Carte scartate (prossima versione)', disabled: true },
-			this.svg(doc, this.ICONS.trash, 18));
+		let discardedCount = 0;
+		try {
+			discardedCount = attachment && attachment.isPDFAttachment()
+				? ZotRecallCore.discardedCards(this.app.loadStore(attachment)).length : 0;
+		}
+		catch (e) {}
+		let trash = this.h(doc, 'button', {
+			class: 'zr-icon-btn',
+			title: 'Carte scartate',
+			onclick: () => this.showTrash(reader, doc, popup),
+		}, this.svg(doc, this.ICONS.trash, 18), discardedCount ? this.h(doc, 'span', { class: 'zr-count', text: String(discardedCount) }) : null);
 		let body = this.h(doc, 'div', { class: 'zr-body' });
 		this.setView(popup, this.header(doc, popup, 'ZotRecall', { actions: [trash, gear] }), body);
 
@@ -486,18 +502,53 @@ var ZotRecallUI = {
 		let cards = ZotRecallCore.activeCards(store);
 		let index = Math.max(0, Math.min(startIndex, cards.length - 1));
 		let flipped = false;
+		let editing = false;
+		let orphans = new Set();
+		let error = h(doc, 'p', { class: 'zr-error', hidden: true });
 		let body = h(doc, 'div', { class: 'zr-body' });
 		this.setView(popup, this.header(doc, popup, 'Anteprima carte', { onBack: () => this.showMain(reader, doc, popup) }), body);
 
+		// Cards whose sentences are no longer highlighted
+		this.app.extract(attachment).then(({ sentences }) => {
+			orphans = new Set(ZotRecallCore.orphanKeys(store, sentences));
+			if (orphans.size && popup.isConnected && !editing) render();
+		}).catch(e => Zotero.logError(e));
+
+		let save = async () => {
+			try {
+				await this.app.saveStore(attachment, store);
+				error.hidden = true;
+			}
+			catch (e) {
+				Zotero.logError(e);
+				error.textContent = e.message || String(e);
+				error.hidden = false;
+			}
+		};
+
+		let move = (delta) => {
+			index = Math.max(0, Math.min(cards.length - 1, index + delta));
+			flipped = false;
+			render();
+		};
+
 		let render = () => {
 			if (!cards.length) {
-				body.replaceChildren(h(doc, 'p', { class: 'zr-note', text: 'Nessuna carta.' }));
+				body.replaceChildren(h(doc, 'p', { class: 'zr-note', text: 'Nessuna carta attiva.' }), error);
 				return;
 			}
 			let card = cards[index];
-			let face = h(doc, 'div', { class: 'zr-card', tabindex: '0', title: 'Clic o spazio per girare' },
-				h(doc, 'div', { class: 'zr-card-q', text: card.question }));
-			if (flipped) {
+			let isOrphan = card.sentenceKeys.some(k => orphans.has(k));
+			let question;
+			if (editing) {
+				question = h(doc, 'textarea', { class: 'zr-edit' });
+				question.value = card.question;
+			}
+			else {
+				question = h(doc, 'div', { class: 'zr-card-q', text: card.question });
+			}
+			let face = h(doc, 'div', { class: 'zr-card' + (editing ? ' zr-editing' : ''), tabindex: '0', title: editing ? null : 'Clic o spazio per girare' }, question);
+			if (flipped || editing) {
 				let backNode = h(doc, 'div', { class: 'zr-card-back' });
 				for (let key of card.sentenceKeys) {
 					let s = store.sentences[key];
@@ -505,10 +556,12 @@ var ZotRecallUI = {
 				}
 				face.append(backNode);
 			}
-			face.addEventListener('click', () => {
-				flipped = !flipped;
-				render();
-			});
+			if (!editing) {
+				face.addEventListener('click', () => {
+					flipped = !flipped;
+					render();
+				});
+			}
 			let pageLink = h(doc, 'button', { class: 'zr-link', text: `pag. ${(card.pageIndex ?? 0) + 1}`, title: 'Vai alla pagina' });
 			pageLink.addEventListener('click', () => {
 				try {
@@ -518,46 +571,143 @@ var ZotRecallUI = {
 					Zotero.logError(e);
 				}
 			});
-			let prev = h(doc, 'button', { class: 'zr-btn', text: '←', disabled: index === 0 });
-			let next = h(doc, 'button', { class: 'zr-btn', text: '→', disabled: index === cards.length - 1 });
-			prev.addEventListener('click', () => {
-				index--;
-				flipped = false;
-				render();
-			});
-			next.addEventListener('click', () => {
-				index++;
-				flipped = false;
-				render();
-			});
-			body.replaceChildren(
-				h(doc, 'div', { class: 'zr-meta-row' }, h(doc, 'span', { text: `${index + 1} di ${cards.length}` }), pageLink),
-				face,
-				h(doc, 'div', { class: 'zr-footer', style: { justifyContent: 'space-between' } }, prev,
-					h(doc, 'button', { class: 'zr-btn', text: flipped ? 'Mostra domanda' : 'Gira', onclick: () => {
-						flipped = !flipped;
-						render();
-					} }), next));
-			face.focus();
-		};
-		popup._zrKeys = (e) => {
-			if (!cards.length || ['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return false;
-			if (e.key === ' ') {
-				flipped = !flipped;
-			}
-			else if (e.key === 'ArrowRight' && index < cards.length - 1) {
-				index++;
-				flipped = false;
-			}
-			else if (e.key === 'ArrowLeft' && index > 0) {
-				index--;
-				flipped = false;
+			let badges = [];
+			if (card.edited) badges.push(h(doc, 'span', { class: 'zr-tag', text: 'modificata' }));
+			if (isOrphan) badges.push(h(doc, 'span', { class: 'zr-tag zr-tag-warn', text: 'orfana', title: 'Il periodo non è più evidenziato' }));
+
+			let actions;
+			if (editing) {
+				let cancel = h(doc, 'button', { class: 'zr-btn', text: 'Annulla' });
+				cancel.addEventListener('click', () => {
+					editing = false;
+					render();
+				});
+				let ok = h(doc, 'button', { class: 'zr-btn zr-primary', text: 'Salva' });
+				ok.addEventListener('click', async () => {
+					let text = question.value.trim();
+					if (!text) return;
+					ZotRecallCore.editCard(store, card.id, text);
+					editing = false;
+					render();
+					await save();
+				});
+				actions = h(doc, 'div', { class: 'zr-footer' }, cancel, ok);
 			}
 			else {
-				return false;
+				let prev = h(doc, 'button', { class: 'zr-btn', text: '←', title: 'Precedente', disabled: index === 0, onclick: () => move(-1) });
+				let next = h(doc, 'button', { class: 'zr-btn', text: '→', title: 'Successiva', disabled: index === cards.length - 1, onclick: () => move(1) });
+				let edit = h(doc, 'button', { class: 'zr-btn', text: 'Modifica' });
+				edit.addEventListener('click', () => {
+					editing = true;
+					render();
+				});
+				let discard = h(doc, 'button', { class: 'zr-btn zr-danger', text: 'Scarta' });
+				discard.addEventListener('click', async () => {
+					ZotRecallCore.setCardStatus(store, card.id, 'discarded');
+					cards.splice(index, 1);
+					index = Math.min(index, cards.length - 1);
+					flipped = false;
+					render();
+					await save();
+				});
+				actions = h(doc, 'div', { class: 'zr-footer', style: { justifyContent: 'space-between' } },
+					prev,
+					h(doc, 'div', { class: 'zr-row' }, edit, discard,
+						h(doc, 'button', { class: 'zr-btn', text: flipped ? 'Domanda' : 'Gira', onclick: () => {
+							flipped = !flipped;
+							render();
+						} })),
+					next);
 			}
-			render();
+			body.replaceChildren(
+				h(doc, 'div', { class: 'zr-meta-row' },
+					h(doc, 'span', {}, `${index + 1} di ${cards.length} `, ...badges),
+					pageLink),
+				face,
+				actions,
+				error);
+			if (editing) question.focus();
+			else face.focus();
+		};
+		popup._zrKeys = (e) => {
+			if (!cards.length || editing || ['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return false;
+			if (e.key === ' ') {
+				flipped = !flipped;
+				render();
+			}
+			else if (e.key === 'ArrowRight') move(1);
+			else if (e.key === 'ArrowLeft') move(-1);
+			else return false;
 			return true;
+		};
+		render();
+	},
+
+	// ------------------------------------------------------------------
+	// Trash
+	// ------------------------------------------------------------------
+
+	showTrash(reader, doc, popup) {
+		let h = this.h.bind(this);
+		let attachment = this.app.getAttachment(reader);
+		let store = this.app.loadStore(attachment);
+		let error = h(doc, 'p', { class: 'zr-error', hidden: true });
+		let body = h(doc, 'div', { class: 'zr-body' });
+		this.setView(popup, this.header(doc, popup, 'Carte scartate', { onBack: () => this.showMain(reader, doc, popup) }), body);
+
+		let save = async () => {
+			try {
+				await this.app.saveStore(attachment, store);
+				error.hidden = true;
+			}
+			catch (e) {
+				Zotero.logError(e);
+				error.textContent = e.message || String(e);
+				error.hidden = false;
+			}
+		};
+
+		let render = () => {
+			let cards = ZotRecallCore.discardedCards(store);
+			if (!cards.length) {
+				body.replaceChildren(h(doc, 'p', { class: 'zr-note', text: 'Il cestino è vuoto.' }), error);
+				return;
+			}
+			let rows = cards.map((card) => {
+				let restore = h(doc, 'button', { class: 'zr-btn', text: 'Ripristina' });
+				restore.addEventListener('click', async () => {
+					ZotRecallCore.setCardStatus(store, card.id, 'active');
+					render();
+					await save();
+				});
+				let del = h(doc, 'button', { class: 'zr-btn zr-danger', text: 'Elimina' });
+				del.addEventListener('click', async () => {
+					ZotRecallCore.deleteCard(store, card.id);
+					render();
+					await save();
+				});
+				return h(doc, 'div', { class: 'zr-sentence' },
+					h(doc, 'div', { class: 'zr-meta', text: `pag. ${(card.pageIndex ?? 0) + 1}` }),
+					h(doc, 'div', { class: 'zr-trash-q', text: card.question }),
+					h(doc, 'div', { class: 'zr-row', style: { justifyContent: 'flex-end', marginTop: '6px' } }, restore, del));
+			});
+			let empty = h(doc, 'button', { class: 'zr-btn zr-danger', text: `Svuota cestino (${cards.length})` });
+			let confirming = false;
+			empty.addEventListener('click', async () => {
+				if (!confirming) {
+					confirming = true;
+					empty.textContent = 'Conferma: elimina definitivamente';
+					return;
+				}
+				ZotRecallCore.emptyTrash(store);
+				render();
+				await save();
+			});
+			body.replaceChildren(
+				h(doc, 'p', { class: 'zr-note', style: { marginTop: '0' }, text: 'Le carte scartate non vengono esportate. Le evidenziazioni nel PDF restano come sono.' }),
+				...rows,
+				h(doc, 'div', { class: 'zr-footer' }, empty),
+				error);
 		};
 		render();
 	},
