@@ -476,14 +476,40 @@ var ZotRecallCore = (function () {
 	 *   key: stable id of the sentence (page + normalized text)
 	 *   fingerprint: changes when the highlighting of the sentence changes
 	 */
+	const CONTEXT_SENTENCES = 3;
+
 	function extractSentences(paragraphs, options = {}) {
 		let result = [];
 		let seen = new Map();
-		for (let p of paragraphs) {
+		let segCache = new Map();
+		let textsOf = (pi) => {
+			if (!segCache.has(pi)) {
+				let p = paragraphs[pi];
+				segCache.set(pi, segmentSentences(p.text, options.locale).map(x => normalizeText(p.text.slice(x.start, x.end))));
+			}
+			return segCache.get(pi);
+		};
+		// Up to CONTEXT_SENTENCES sentences before/after, crossing into the
+		// neighboring paragraphs when needed (in document order)
+		let neighbors = (pi, si) => {
+			let before = textsOf(pi).slice(Math.max(0, si - CONTEXT_SENTENCES), si);
+			for (let q = pi - 1; q >= 0 && before.length < CONTEXT_SENTENCES; q--) {
+				let t = textsOf(q);
+				before = t.slice(Math.max(0, t.length - (CONTEXT_SENTENCES - before.length))).concat(before);
+			}
+			let after = textsOf(pi).slice(si + 1, si + 1 + CONTEXT_SENTENCES);
+			for (let q = pi + 1; q < paragraphs.length && after.length < CONTEXT_SENTENCES; q++) {
+				after = after.concat(textsOf(q).slice(0, CONTEXT_SENTENCES - after.length));
+			}
+			return { before, after };
+		};
+		for (let pi = 0; pi < paragraphs.length; pi++) {
+			let p = paragraphs[pi];
 			if (!p.marks || !p.marks.some(m => m)) continue;
 			let sentences = segmentSentences(p.text, options.locale);
 			let opening = sentences.length ? normalizeText(p.text.slice(sentences[0].start, sentences[0].end)) : '';
-			for (let s of sentences) {
+			for (let si = 0; si < sentences.length; si++) {
+				let s = sentences[si];
 				let hasMark = false;
 				for (let i = s.start; i < s.end; i++) {
 					if (p.marks[i]) {
@@ -512,6 +538,7 @@ var ZotRecallCore = (function () {
 					spans: normSpans,
 					section: p.section || '',
 					opening: opening === text ? '' : opening,
+					...neighbors(pi, si),
 				});
 			}
 		}
@@ -575,6 +602,7 @@ var ZotRecallCore = (function () {
 		if (!store.review || typeof store.review !== 'object') store.review = {};
 		if (!Array.isArray(store.review.merges)) store.review.merges = [];
 		if (!Array.isArray(store.review.excluded)) store.review.excluded = [];
+		if (!store.review.extend || typeof store.review.extend !== 'object') store.review.extend = {};
 		return store.review;
 	}
 
@@ -612,8 +640,44 @@ var ZotRecallCore = (function () {
 				units.push({ id: s.key, keys: [s.key], sentences: [s], merged: false });
 			}
 		}
-		for (let u of units) u.excluded = u.keys.some(k => excluded.has(k));
+		for (let u of units) {
+			u.excluded = u.keys.some(k => excluded.has(k));
+			let first = u.sentences[0];
+			let last = u.sentences[u.sentences.length - 1];
+			let nb = Math.min((review.extend[first.key] || {}).before || 0, (first.before || []).length);
+			let na = Math.min((review.extend[last.key] || {}).after || 0, (last.after || []).length);
+			u.before = nb ? first.before.slice(-nb) : [];
+			u.after = na ? last.after.slice(0, na) : [];
+		}
 		return units;
+	}
+
+	/** Context sentences added around each sentence key: {key: [before, after]}. */
+	function unitContext(unit) {
+		let ctx = {};
+		if (unit.before.length) ctx[unit.keys[0]] = [unit.before.length, 0];
+		if (unit.after.length) {
+			let k = unit.keys[unit.keys.length - 1];
+			ctx[k] = [(ctx[k] || [0])[0], unit.after.length];
+		}
+		return ctx;
+	}
+
+	/**
+	 * Add (delta > 0) or remove (delta < 0) non-highlighted sentences before or
+	 * after a sentence. side: 'before' | 'after'.
+	 */
+	function extendKey(store, key, side, delta) {
+		let review = ensureReview(store);
+		let e = Object.assign({ before: 0, after: 0 }, review.extend[key]);
+		e[side] = Math.max(0, Math.min(CONTEXT_SENTENCES, (e[side] || 0) + delta));
+		if (!e.before && !e.after) delete review.extend[key];
+		else review.extend[key] = e;
+	}
+
+	function clearExtend(store, keys) {
+		let review = ensureReview(store);
+		for (let k of keys) delete review.extend[k];
 	}
 
 	/** Merge the given sentence keys (and any merge they already belong to) into one unit. */
@@ -669,12 +733,17 @@ var ZotRecallCore = (function () {
 		let cardChanged = c => c.sentenceKeys.some(k => current.has(k)
 			&& (!c.fingerprints || c.fingerprints[k] !== current.get(k)));
 		// A sentence the user merged after its cards were made counts as changed
+		// Same for context sentences added or removed after generation
 		let unitOf = new Map();
+		let ctxOf = new Map();
 		for (let u of buildUnits(sentences, store)) {
 			if (u.merged) u.keys.forEach(k => unitOf.set(k, u.keys));
+			let ctx = unitContext(u);
+			u.keys.forEach(k => ctxOf.set(k, JSON.stringify(ctx[k] || [0, 0])));
 		}
-		let mergeChanged = (c, key) => unitOf.has(key)
-			&& !unitOf.get(key).every(k => c.sentenceKeys.includes(k));
+		let mergeChanged = (c, key) => (unitOf.has(key)
+			&& !unitOf.get(key).every(k => c.sentenceKeys.includes(k)))
+			|| JSON.stringify((c.context || {})[key] || [0, 0]) !== ctxOf.get(key);
 		for (let s of sentences) {
 			let cards = store.cards.filter(c => c.sentenceKeys.includes(s.key));
 			let active = cards.filter(c => c.status === 'active');
@@ -733,13 +802,21 @@ var ZotRecallCore = (function () {
 	function applyResults(store, group, results, meta = {}) {
 		let keys = new Set(group.sentences.map(s => s.key));
 		store.cards = store.cards.filter(c => !(c.status === 'active' && c.sentenceKeys.some(k => keys.has(k))));
+		let context = {};
+		for (let u of group.units || []) Object.assign(context, unitContext(u));
+		let unitOfKey = new Map();
+		for (let u of group.units || []) u.keys.forEach(k => unitOfKey.set(k, u));
 		for (let s of group.sentences) {
-			store.sentences[s.key] = {
+			let u = unitOfKey.get(s.key);
+			let entry = {
 				text: s.text,
 				spans: s.spans.map(({ start, end, color }) => ({ start, end, color })),
 				pageIndex: s.pageIndex,
 				section: s.section,
 			};
+			if (u && u.keys[0] === s.key && u.before.length) entry.before = u.before.slice();
+			if (u && u.keys[u.keys.length - 1] === s.key && u.after.length) entry.after = u.after.slice();
+			store.sentences[s.key] = entry;
 		}
 		let added = [];
 		let now = new Date().toISOString();
@@ -751,9 +828,12 @@ var ZotRecallCore = (function () {
 				fingerprints[k] = group.sentences.find(s => s.key === k).fingerprint;
 			}
 			for (let q of r.questions) {
+				let cardContext = {};
+				for (let k of sentenceKeys) if (context[k]) cardContext[k] = context[k];
 				let card = {
 					id: newCardID(),
 					sentenceKeys,
+					context: cardContext,
 					question: q,
 					status: 'active',
 					edited: false,
@@ -851,7 +931,7 @@ var ZotRecallCore = (function () {
 		return card.sentenceKeys
 			.map(k => store.sentences[k])
 			.filter(Boolean)
-			.map(sentenceToHTML)
+			.map(s => [...(s.before || []).map(escapeHTML), sentenceToHTML(s), ...(s.after || []).map(escapeHTML)].join(' '))
 			.join('<br><br>');
 	}
 
@@ -906,7 +986,11 @@ Return only JSON: {"groups":[{"sentence_ids":["..."],"questions":["..."]}],"skip
 
 	/** A merged unit becomes one <s> holding all its sentences. */
 	function unitToMarkup(unit, id) {
-		let inner = unit.sentences.map(s => sentenceToMarkup(s, null)).join(' ');
+		let inner = [
+			...(unit.before || []).map(escapeXMLText),
+			...unit.sentences.map(s => sentenceToMarkup(s, null)),
+			...(unit.after || []).map(escapeXMLText),
+		].join(' ');
 		return unit.sentences.length > 1
 			? `<s id="${id}" merged="true">${inner}</s>`
 			: `<s id="${id}">${inner}</s>`;
@@ -1095,6 +1179,8 @@ Return only JSON: {"groups":[{"sentence_ids":["..."],"questions":["..."]}],"skip
 		mergeKeys,
 		splitKeys,
 		setExcluded,
+		extendKey,
+		clearExtend,
 		planGeneration,
 		applyResults,
 		activeCards,

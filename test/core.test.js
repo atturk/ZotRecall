@@ -260,3 +260,32 @@ test('review: merged sentences go to the model as one unit, excluded ones are sk
 	let cls = Core.classify(sentences, store);
 	assert.ok(cls.changed.some(s => s.key === s2), 'new merge invalidates old cards');
 });
+
+test('review: include the previous or next non-highlighted sentence', () => {
+	let doc = makeDoc();
+	let a3 = ann('A3', P1B, 'Dense (or δ) granules', 1, 50, 700);
+	let store = Core.emptyStore('X');
+	let { sentences } = Core.extractFromDocument(doc, [a3]);
+	assert.equal(sentences.length, 1);
+	let s = sentences[0];
+	assert.equal(s.before[s.before.length - 1].startsWith('α-Granules have the adhesion molecule'), true);
+	assert.deepEqual(s.after, []);
+
+	Core.extendKey(store, s.key, 'before', 1);
+	let [unit] = Core.buildUnits(sentences, store);
+	assert.equal(unit.before.length, 1);
+	let [group] = Core.planGeneration(sentences, store);
+	let { messages, idMap } = Core.buildMessages(group);
+	assert.ok(/<s id="s1">α-Granules have the adhesion molecule .*fibrinogen\. <hl c="yellow">Dense/.test(messages[1].content));
+
+	let { results } = Core.parseResponse('{"groups":[{"sentence_ids":["s1"],"questions":["Q?"]}],"skipped":[]}', idMap);
+	Core.applyResults(store, group, results);
+	let card = Core.activeCards(store)[0];
+	assert.ok(Core.backHTML(store, card).startsWith('α-Granules have'), 'context on the back');
+	assert.equal(Core.planGeneration(sentences, store).length, 0);
+
+	// Removing the context afterwards marks the card as changed
+	Core.extendKey(store, s.key, 'before', -1);
+	assert.equal(Core.classify(sentences, store).changed.length, 1);
+	assert.equal(store.review.extend[s.key], undefined);
+});

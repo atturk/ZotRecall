@@ -58,6 +58,8 @@ var ZotRecallSidebar = {
 				error: '',
 				scrolled: false,
 				busy: false,
+				pageFilter: false,
+				page: null,
 			};
 			this._states.set(doc, state);
 			this._docs.add(doc);
@@ -160,6 +162,7 @@ var ZotRecallSidebar = {
 				.map(a => a.key + ':' + a.color + ':' + a.dateModified)
 				.join('|');
 			if (sig !== state.signature) this.render(doc, sig);
+			else if (state.pageFilter && this.app.getCurrentPageIndex(state.reader) !== state.page) this.render(doc, sig);
 		}
 		catch (e) {}
 	},
@@ -168,7 +171,7 @@ var ZotRecallSidebar = {
 	// Rendering
 	// ------------------------------------------------------------------
 
-	async render(doc, signature = null) {
+	async render(doc, signature = null, { resetScroll = false } = {}) {
 		let state = this._states.get(doc);
 		let view = doc.getElementById('zotrecall-sidebar-view');
 		if (!state || !view) return;
@@ -180,7 +183,7 @@ var ZotRecallSidebar = {
 			return;
 		}
 		state.busy = true;
-		if (!state.units.length) {
+		if (!state.units.length && !view.querySelector('.zr-sb-list')) {
 			view.replaceChildren(h(doc, 'p', { class: 'zr-sb-empty', text: 'Estrazione del testo in corso…' }));
 		}
 		let sentences;
@@ -216,12 +219,15 @@ var ZotRecallSidebar = {
 		}
 
 		let page = this.app.getCurrentPageIndex(reader);
-		let counts = { new: 0, done: 0, changed: 0, excluded: 0 };
+		state.page = page;
+		let counts = { new: 0, done: 0, changed: 0, excluded: 0, discarded: 0 };
 		let list = h(doc, 'div', { class: 'zr-sb-list', role: 'listbox' });
 		let firstOnPage = null;
-		for (let u of units) {
+		let onPage = u => u.sentences.some(s => s.pageIndex === page);
+		let shown = state.pageFilter ? units.filter(onPage) : units;
+		for (let u of units) counts[this.unitStatus(u, sets).kind]++;
+		for (let u of shown) {
 			let status = this.unitStatus(u, sets);
-			counts[status.kind] = (counts[status.kind] || 0) + 1;
 			let n = Math.max(0, ...u.keys.map(k => cardCount.get(k) || 0));
 			let el = this.unitNode(doc, u, status, n);
 			if (firstOnPage === null && u.sentences.some(s => s.pageIndex >= page)) firstOnPage = el;
@@ -230,6 +236,9 @@ var ZotRecallSidebar = {
 		if (!units.length) {
 			list.append(h(doc, 'p', { class: 'zr-sb-empty', text: 'Nessuna evidenziazione nel documento. Evidenzia del testo e torna qui.' }));
 		}
+		else if (!shown.length) {
+			list.append(h(doc, 'p', { class: 'zr-sb-empty', text: `Nessun periodo evidenziato a pagina ${page + 1}.` }));
+		}
 		if (unmatched.length) {
 			list.append(h(doc, 'p', {
 				class: 'zr-sb-note',
@@ -237,7 +246,7 @@ var ZotRecallSidebar = {
 			}));
 		}
 
-		let pageUnits = units.filter(u => u.sentences.some(s => s.pageIndex === page)).length;
+		let pageUnits = units.filter(onPage).length;
 		let head = h(doc, 'div', { class: 'zr-sb-head' },
 			h(doc, 'div', { class: 'zr-sb-summary', text: this.summaryText(units.length, counts) }),
 			h(doc, 'div', { class: 'zr-sb-actions' },
@@ -252,17 +261,27 @@ var ZotRecallSidebar = {
 					disabled: !units.length,
 					title: 'Genera le carte di tutto il documento',
 					onclick: () => this.ui.openGeneration(reader, doc, {}),
-				}, 'Genera tutto')),
+				}, 'Genera tutto'),
+				h(doc, 'button', {
+					class: 'zr-sb-btn zr-sb-filter' + (state.pageFilter ? ' on' : ''),
+					title: state.pageFilter ? 'Mostra i periodi di tutto il documento' : 'Mostra solo i periodi della pagina corrente',
+					'aria-pressed': state.pageFilter ? 'true' : 'false',
+					onclick: () => {
+						state.pageFilter = !state.pageFilter;
+						state.scrolled = false;
+						this.render(doc, null, { resetScroll: true });
+					},
+				}, state.pageFilter ? `Solo pagina ${page + 1} ✕` : 'Solo questa pagina')),
 			this.selectionBar(doc, state),
 			state.error ? h(doc, 'p', { class: 'zr-sb-error', text: state.error }) : null);
 		state.error = '';
 
-		let scrollTop = view.querySelector('.zr-sb-list')?.scrollTop;
+		let scrollTop = resetScroll ? undefined : view.querySelector('.zr-sb-list')?.scrollTop;
 		view.replaceChildren(head, list);
 		if (scrollTop !== undefined) {
 			list.scrollTop = scrollTop;
 		}
-		else if (!state.scrolled && firstOnPage) {
+		else if (!state.scrolled && firstOnPage && !state.pageFilter) {
 			state.scrolled = true;
 			list.scrollTop = Math.max(0, firstOnPage.offsetTop - list.offsetTop - 4);
 		}
@@ -301,6 +320,8 @@ var ZotRecallSidebar = {
 		let more = h(doc, 'button', { class: 'zr-sb-more', title: 'Altro', tabindex: '-1' },
 			this.ui.svg(doc, ['M5 10h.01', 'M10 10h.01', 'M15 10h.01'], 16));
 		let text = h(doc, 'div', { class: 'zr-sb-content' });
+		let ctx = t => h(doc, 'span', { class: 'zr-sb-ctx', title: 'Periodo aggiunto come contesto', text: t });
+		for (let t of u.before) text.append(ctx(t), doc.createTextNode(' '));
 		u.sentences.forEach((s, i) => {
 			if (i) text.append(doc.createTextNode(' '));
 			let pos = 0;
@@ -312,6 +333,7 @@ var ZotRecallSidebar = {
 			}
 			text.append(doc.createTextNode(s.text.slice(pos)));
 		});
+		for (let t of u.after) text.append(doc.createTextNode(' '), ctx(t));
 		let el = h(doc, 'div', {
 			class: 'zr-sb-unit' + (state.selected.has(u.id) ? ' selected' : '') + (u.excluded ? ' excluded' : ''),
 			tabindex: '-1',
@@ -324,6 +346,9 @@ var ZotRecallSidebar = {
 				h(doc, 'span', { class: 'zr-sb-page', text: (pages.length > 1 ? 'Pagine ' : 'Pagina ') + pages.join('–') })),
 			h(doc, 'div', { class: 'zr-sb-end' },
 				u.merged ? h(doc, 'span', { class: 'zr-sb-tag zr-sb-merged', text: `Unito · ${u.sentences.length}` }) : null,
+				u.before.length || u.after.length
+					? h(doc, 'span', { class: 'zr-sb-tag zr-sb-merged', title: 'Periodi non evidenziati aggiunti come contesto', text: `+${u.before.length + u.after.length}` })
+					: null,
 				h(doc, 'span', {
 					class: 'zr-sb-tag zr-sb-' + status.kind,
 					text: status.kind === 'done' && cards ? `${cards} ${cards === 1 ? 'carta' : 'carte'}` : status.label,
@@ -347,7 +372,8 @@ var ZotRecallSidebar = {
 				this.render(doc);
 			}
 			let r = more.getBoundingClientRect();
-			this.openMenu(doc, u, r.right, r.bottom + 2);
+			let side = doc.getElementById('sidebarContainer')?.getBoundingClientRect();
+			this.openMenu(doc, u, side ? side.right + 6 : r.right, r.top - 4);
 		});
 		return el;
 	},
@@ -468,6 +494,32 @@ var ZotRecallSidebar = {
 		await this.change(doc, store => ZotRecallCore.setExcluded(store, keys, excluded));
 	},
 
+	/**
+	 * Add the sentence before/after a unit. If that sentence is itself
+	 * highlighted, merge with its unit instead.
+	 */
+	async include(doc, unit, side) {
+		let state = this._states.get(doc);
+		let idx = state.units.findIndex(u => u.id === unit.id);
+		let list = side === 'before' ? unit.sentences[0].before : unit.sentences[unit.sentences.length - 1].after;
+		let have = side === 'before' ? unit.before.length : unit.after.length;
+		let nextText = side === 'before' ? list[list.length - 1 - have] : list[have];
+		let neighbor = state.units[side === 'before' ? idx - 1 : idx + 1];
+		let neighborEdge = neighbor && (side === 'before'
+			? neighbor.sentences[neighbor.sentences.length - 1]
+			: neighbor.sentences[0]);
+		if (neighborEdge && nextText && neighborEdge.text === nextText) {
+			await this.merge(doc, [unit, neighbor]);
+			return;
+		}
+		let key = side === 'before' ? unit.keys[0] : unit.keys[unit.keys.length - 1];
+		await this.change(doc, store => ZotRecallCore.extendKey(store, key, side, 1));
+	},
+
+	async uninclude(doc, unit) {
+		await this.change(doc, store => ZotRecallCore.clearExtend(store, unit.keys));
+	},
+
 	generateUnits(doc, units) {
 		let state = this._states.get(doc);
 		let keys = units.filter(u => !u.excluded).flatMap(u => u.keys);
@@ -498,12 +550,10 @@ var ZotRecallSidebar = {
 		let next = !many && state.units[idx + 1];
 		let allExcluded = units.every(u => u.excluded);
 		let menu = h(doc, 'div', { id: 'zotrecall-menu', role: 'menu' });
+		let off = null;
 		let close = () => {
 			menu.remove();
-			doc.removeEventListener('mousedown', onDoc, true);
-		};
-		let onDoc = (e) => {
-			if (!menu.contains(e.target)) close();
+			if (off) off();
 		};
 		let item = (label, fn, disabled) => h(doc, 'button', {
 			class: 'zr-menu-item',
@@ -515,10 +565,16 @@ var ZotRecallSidebar = {
 			},
 		}, label);
 		let sep = () => h(doc, 'div', { class: 'zr-menu-sep' });
+		let canBefore = !many && unit.before.length < (unit.sentences[0].before || []).length;
+		let canAfter = !many && unit.after.length < (unit.sentences[unit.sentences.length - 1].after || []).length;
 		menu.append(...[
+			many ? null : item('Includi periodo precedente', () => this.include(doc, unit, 'before'), !canBefore),
+			many ? null : item('Includi periodo successivo', () => this.include(doc, unit, 'after'), !canAfter),
+			!many && (unit.before.length || unit.after.length) ? item('Togli i periodi aggiunti', () => this.uninclude(doc, unit)) : null,
+			sep(),
 			many
 				? item(`Unisci i ${units.length} periodi`, () => this.merge(doc, units))
-				: item('Unisci con il successivo', () => this.merge(doc, [unit, next]), !next),
+				: item('Unisci con il successivo evidenziato', () => this.merge(doc, [unit, next]), !next),
 			units.some(u => u.merged) ? item('Separa', () => this.split(doc, units)) : null,
 			sep(),
 			item(allExcluded ? 'Includi di nuovo' : 'Escludi dalla generazione', () => this.exclude(doc, units, !allExcluded)),
@@ -530,9 +586,9 @@ var ZotRecallSidebar = {
 		let win = doc.defaultView;
 		let w = menu.offsetWidth;
 		let hgt = menu.offsetHeight;
-		menu.style.left = Math.max(4, Math.min(x - w, win.innerWidth - w - 4)) + 'px';
+		menu.style.left = Math.max(4, Math.min(x, win.innerWidth - w - 4)) + 'px';
 		menu.style.top = Math.max(4, Math.min(y, win.innerHeight - hgt - 4)) + 'px';
-		doc.addEventListener('mousedown', onDoc, true);
+		off = this.ui.onOutsideClick(doc, menu, close);
 	},
 
 	// ------------------------------------------------------------------
@@ -576,7 +632,7 @@ var ZotRecallSidebar = {
 .zr-sb-new { background: rgba(47,111,222,.16); color: var(--accent-blue, #2f6fde); }
 .zr-sb-done { background: rgba(95,178,54,.18); color: #3f8a1f; }
 .zr-sb-changed { background: #fde8c8; color: #8a5300; }
-.zr-sb-merged { background: rgba(162,138,229,.25); color: #5a3fb4; }
+.zr-sb-merged { background: rgba(162,138,229,.32); color: var(--fill-primary); }
 .zr-sb-more { display: inline-flex; padding: 1px 2px; border: 0; border-radius: 4px; background: none; color: var(--fill-secondary); cursor: pointer; }
 .zr-sb-more svg { stroke-width: 2.6; }
 .zr-sb-more:hover { background: var(--fill-quinary); }
@@ -584,6 +640,8 @@ var ZotRecallSidebar = {
 .zr-sb-border { position: absolute; left: 8px; top: 5px; bottom: 6px; width: 2px; }
 .zr-sb-content { padding: 4px 8px 5px 16px; line-height: 1.4; word-break: break-word; }
 .zr-sb-hl { color: #000; border-radius: 2px; }
+.zr-sb-ctx { font-style: italic; opacity: .75; text-decoration: underline dotted; text-underline-offset: 3px; }
+.zr-sb-filter.on { background: var(--accent-blue10); border-color: var(--accent-blue50); }
 .zr-sb-empty, .zr-sb-note { padding: 8px; font-size: 12px; color: var(--fill-secondary); }
 .zr-sb-error { margin: 0; font-size: 12px; color: #c7372f; white-space: pre-wrap; }
 #zotrecall-menu { position: fixed; z-index: 100000; min-width: 200px; padding: 4px; border: 1px solid var(--fill-quinary); border-radius: 7px; background: var(--material-background); box-shadow: 0 6px 20px rgba(0,0,0,.25); display: flex; flex-direction: column; }
@@ -595,7 +653,6 @@ var ZotRecallSidebar = {
 @media (prefers-color-scheme: dark) {
 	.zr-sb-done { color: #8fd16a; }
 	.zr-sb-changed { background: rgba(241,152,55,.22); color: #f5b46c; }
-	.zr-sb-merged { color: #c3b1f5; }
 	.zr-sb-new { color: #7fa9f7; }
 }
 `;

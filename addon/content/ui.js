@@ -233,9 +233,7 @@ var ZotRecallUI = {
 			return;
 		}
 		let popup = this.h(doc, 'div', { id: 'zotrecall-popup', role: 'dialog' });
-		let onDocClick = (e) => {
-			if (!popup.contains(e.target) && !btn.contains(e.target)) close();
-		};
+		let offOutside = null;
 		let onKey = (e) => {
 			if (e.key === 'Escape') {
 				close();
@@ -248,14 +246,57 @@ var ZotRecallUI = {
 		};
 		let close = () => {
 			popup.remove();
-			doc.removeEventListener('mousedown', onDocClick, true);
+			if (offOutside) offOutside();
 			doc.removeEventListener('keydown', onKey, true);
 		};
 		popup._zrClose = close;
-		doc.addEventListener('mousedown', onDocClick, true);
+		offOutside = this.onOutsideClick(doc, popup, close, [btn]);
 		doc.addEventListener('keydown', onKey, true);
 		doc.body.append(popup);
 		this.showMain(reader, doc, popup);
+	},
+
+	/**
+	 * Call fn on a mousedown outside el (and outside `except`). The PDF pages
+	 * live in nested iframes, whose events never reach the reader document,
+	 * so every iframe document and the main window are watched too.
+	 * @returns {function} remove the listeners
+	 */
+	onOutsideClick(doc, el, fn, except = []) {
+		let docs = new Set([doc]);
+		let addFrames = (d, depth) => {
+			if (depth > 3) return;
+			for (let f of d.querySelectorAll('iframe, browser')) {
+				try {
+					let cd = f.contentDocument;
+					if (cd && !docs.has(cd)) {
+						docs.add(cd);
+						addFrames(cd, depth + 1);
+					}
+				}
+				catch (e) {}
+			}
+		};
+		addFrames(doc, 0);
+		try {
+			let top = doc.defaultView.top.document;
+			if (top) docs.add(top);
+		}
+		catch (e) {}
+		let handler = (e) => {
+			let t = e.target;
+			if (t && (el.contains(t) || except.some(x => x && x.contains(t)))) return;
+			fn();
+		};
+		for (let d of docs) d.addEventListener('mousedown', handler, true);
+		return () => {
+			for (let d of docs) {
+				try {
+					d.removeEventListener('mousedown', handler, true);
+				}
+				catch (e) {}
+			}
+		};
 	},
 
 	header(doc, popup, title, { onBack, actions = [] } = {}) {
@@ -457,7 +498,7 @@ var ZotRecallUI = {
 			let merged = p.groups.reduce((m, g) => m + g.units.filter(u => u.keys.length > 1).length, 0);
 			summary.textContent = n
 				? `Verranno inviati al modello ${n} ${n === 1 ? 'periodo' : 'periodi'} in ${p.groups.length} ${p.groups.length === 1 ? 'richiesta' : 'richieste'}`
-					+ (merged ? ` (${merged === 1 ? 'un periodo unito conta' : merged + ' periodi uniti contano'} come uno). ` : '. ')
+					+ (merged ? ` (ogni gruppo di periodi uniti conta come uno). ` : '. ')
 					+ `Il modello scrive da 1 a 4 domande per periodo, quindi avrai tra ${n} e ${n * 4} carte.`
 				: 'Non c\'è niente da generare: tutti i periodi evidenziati hanno già una carta o sono esclusi.';
 		};

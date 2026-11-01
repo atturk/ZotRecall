@@ -21,7 +21,9 @@ Nella barra laterale sinistra del lettore, accanto a miniature, annotazioni e in
 
 - Clic seleziona un periodo e porta all'evidenziazione. Cmd/Ctrl+clic aggiunge o toglie dalla selezione, Maiusc+clic seleziona un intervallo.
 - "Unisci" fa di più periodi un unico periodo: il modello lo riceve come un'unica unità e le carte avranno sul retro tutti i periodi uniti. "Separa" annulla l'unione.
+- "Includi periodo precedente/successivo" (menu ⋯) aggiunge al periodo la frase vicina non evidenziata, per dare contesto al modello; si può ripetere fino a 3 frasi per lato. Le frasi aggiunte compaiono in corsivo e finiscono anche sul retro della carta. Se la frase vicina è a sua volta evidenziata, i due periodi vengono uniti.
 - "Escludi" toglie un periodo dalla generazione senza cancellare l'evidenziazione.
+- "Solo questa pagina" filtra l'elenco sulla pagina corrente e lo aggiorna quando cambi pagina.
 - Il menu ⋯ di ogni periodo offre le stesse azioni.
 - "Genera pagina", "Genera tutto" e "Genera" sulla selezione chiedono sempre conferma, indicando quanti periodi verranno inviati al modello.
 
