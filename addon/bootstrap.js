@@ -1,5 +1,5 @@
 /* global Services, APP_SHUTDOWN */
-var ZotRecall, ZotRecallCore, ZotRecallUI;
+var ZotRecall, ZotRecallCore, ZotRecallUI, ZotRecallSidebar;
 
 function install() {}
 
@@ -9,6 +9,7 @@ async function startup({ id, version, rootURI }) {
 	Components.utils.importGlobalProperties(['TextEncoder', 'TextDecoder', 'atob', 'btoa']);
 	Services.scriptloader.loadSubScript(rootURI + 'content/core.js');
 	Services.scriptloader.loadSubScript(rootURI + 'content/ui.js');
+	Services.scriptloader.loadSubScript(rootURI + 'content/sidebar.js');
 	Services.scriptloader.loadSubScript(rootURI + 'content/zotrecall.js');
 	ZotRecall.init({ id, version, rootURI });
 }
@@ -27,6 +28,7 @@ function shutdown(data, reason) {
 	}
 	ZotRecall = undefined;
 	ZotRecallUI = undefined;
+	ZotRecallSidebar = undefined;
 	ZotRecallCore = undefined;
 }
 
