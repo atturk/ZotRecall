@@ -6,3 +6,6 @@ pref("extensions.zotrecall.disabledColors", "[]");
 pref("extensions.zotrecall.concurrency", 3);
 pref("extensions.zotrecall.ankiURL", "http://127.0.0.1:8765");
 pref("extensions.zotrecall.ankiKey", "");
+pref("extensions.zotrecall.lastDeck", "");
+pref("extensions.zotrecall.lastModel", "");
+pref("extensions.zotrecall.lastFields", "[]");

@@ -24,7 +24,31 @@ var ZotRecall = {
 				Zotero.logError(e);
 			}
 		}, id);
+		this.addToOpenReaders();
 		this.log('Started ' + version);
+	},
+
+	// renderToolbar fires only when a reader tab is created, so tabs that
+	// were already open when the plugin started (restored session, fresh
+	// install, update) need the button added by hand.
+	addToOpenReaders() {
+		for (let reader of Zotero.Reader._readers || []) {
+			try {
+				let doc = reader._iframeWindow && reader._iframeWindow.document;
+				if (!doc || doc.querySelector('.zotrecall-button')) continue;
+				let container = doc.querySelector('.toolbar .end .custom-sections')
+					|| doc.querySelector('.toolbar .end');
+				if (!container) continue;
+				ZotRecallUI.onRenderToolbar({
+					reader,
+					doc,
+					append: (...nodes) => container.prepend(...nodes),
+				});
+			}
+			catch (e) {
+				Zotero.logError(e);
+			}
+		}
 	},
 
 	shutdown() {
@@ -374,6 +398,102 @@ var ZotRecall = {
 			await this.saveStore(attachment, store);
 		}
 		return { created, groups: total, failed, skipped, cancelled };
+	},
+
+	// ------------------------------------------------------------------
+	// Export
+	// ------------------------------------------------------------------
+
+	safeFileName(name) {
+		return String(name || 'zotrecall').replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) || 'zotrecall';
+	},
+
+	/** Ask where to save and write the CSV. @returns {Promise<{path, count}|null>} */
+	async exportCSV(reader, attachment) {
+		let store = this.loadStore(attachment);
+		let cards = ZotRecallCore.activeCards(store);
+		if (!cards.length) throw new Error('Nessuna carta da esportare.');
+		let { FilePicker } = ChromeUtils.importESModule('chrome://zotero/content/modules/filePicker.mjs');
+		let fp = new FilePicker();
+		let parent = this.getParent(attachment);
+		fp.init(reader._iframeWindow || Zotero.getMainWindow(), 'Esporta carte (CSV)', fp.modeSave);
+		fp.appendFilter('CSV', '*.csv');
+		fp.defaultString = this.safeFileName(parent ? parent.getDisplayTitle() : attachment.getDisplayTitle()) + '.csv';
+		let rv = await fp.show();
+		if (rv !== fp.returnOK && rv !== fp.returnReplace) return null;
+		await Zotero.File.putContentsAsync(fp.file, ZotRecallCore.toCSV(store, cards));
+		return { path: fp.file, count: cards.length };
+	},
+
+	async ankiOptions() {
+		let [decks, models] = await Promise.all([this.ankiRequest('deckNames'), this.ankiRequest('modelNames')]);
+		return { decks: decks.sort((a, b) => a.localeCompare(b)), models: models.sort((a, b) => a.localeCompare(b)) };
+	},
+
+	async ankiFields(modelName) {
+		return this.ankiRequest('modelFieldNames', { modelName });
+	},
+
+	/**
+	 * Send active cards to Anki. Cards already sent are updated in place.
+	 * @param {Object} opts {deck, model, frontField, backField, onProgress}
+	 * @returns {Promise<{added, updated, failed: string[]}>}
+	 */
+	async exportToAnki(attachment, opts) {
+		let store = this.loadStore(attachment);
+		let cards = ZotRecallCore.activeCards(store);
+		if (!cards.length) throw new Error('Nessuna carta da esportare.');
+		let decks = await this.ankiRequest('deckNames');
+		if (!decks.includes(opts.deck)) {
+			await this.ankiRequest('createDeck', { deck: opts.deck });
+		}
+		let added = 0;
+		let updated = 0;
+		let failed = [];
+		let done = 0;
+		let fieldsFor = card => ({
+			[opts.frontField]: ZotRecallCore.frontHTML(card),
+			[opts.backField]: ZotRecallCore.backHTML(store, card),
+		});
+		// Notes deleted in Anki since the last export are added again
+		let existing = new Set();
+		let ids = cards.map(c => c.ankiNoteId).filter(Boolean);
+		if (ids.length) {
+			let info = await this.ankiRequest('notesInfo', { notes: ids });
+			(info || []).forEach(n => n && n.noteId && existing.add(n.noteId));
+		}
+		for (let card of cards) {
+			try {
+				if (card.ankiNoteId && existing.has(card.ankiNoteId)) {
+					await this.ankiRequest('updateNoteFields', { note: { id: card.ankiNoteId, fields: fieldsFor(card) } });
+					updated++;
+				}
+				else {
+					let id = await this.ankiRequest('addNote', {
+						note: {
+							deckName: opts.deck,
+							modelName: opts.model,
+							fields: fieldsFor(card),
+							options: { allowDuplicate: false, duplicateScope: 'deck' },
+							tags: [],
+						},
+					});
+					card.ankiNoteId = id;
+					card.ankiDeck = opts.deck;
+					added++;
+				}
+			}
+			catch (e) {
+				failed.push(`"${card.question.slice(0, 60)}": ${e.message}`);
+			}
+			done++;
+			opts.onProgress && opts.onProgress(done, cards.length);
+		}
+		this.setPref('lastDeck', opts.deck);
+		this.setPref('lastModel', opts.model);
+		this.setPref('lastFields', JSON.stringify([opts.frontField, opts.backField]));
+		if (added) await this.saveStore(attachment, store);
+		return { added, updated, failed };
 	},
 
 	// ------------------------------------------------------------------
