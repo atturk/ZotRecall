@@ -1040,6 +1040,7 @@ var ZotRecallCore = (function () {
 					sentenceKeys,
 					context: cardContext,
 					question: q,
+					originalQuestion: q,
 					status: 'active',
 					edited: false,
 					fingerprints,
@@ -1053,6 +1054,76 @@ var ZotRecallCore = (function () {
 			}
 		}
 		return added;
+	}
+
+	/**
+	 * Ensure store.sentences has the current text, spans and context for the
+	 * given unit(s), and return {sentenceKeys, context, fingerprints, pageIndex}.
+	 */
+	function storeUnitSentences(store, units) {
+		let unitList = Array.isArray(units) ? units : [units].filter(Boolean);
+		let sentenceKeys = [];
+		let context = {};
+		let fingerprints = {};
+		let pageIndex = 0;
+		let hasPage = false;
+		for (let u of unitList) {
+			if (!u || !Array.isArray(u.sentences) || !u.sentences.length) continue;
+			Object.assign(context, unitContext(u));
+			let editSig = u.edited ? hash(JSON.stringify((u.renderSentences || []).map(r => [r.text, r.spans]))) : '';
+			let rMap = new Map((u.renderSentences || u.sentences).map(r => [r.key, r]));
+			let lastRenderKey = (u.renderSentences && u.renderSentences.length)
+				? u.renderSentences[u.renderSentences.length - 1].key
+				: u.keys[u.keys.length - 1];
+			for (let s of u.sentences) {
+				if (!sentenceKeys.includes(s.key)) sentenceKeys.push(s.key);
+				fingerprints[s.key] = editSig ? hash(s.fingerprint + '|edit:' + editSig) : s.fingerprint;
+				let rs = rMap.get(s.key) || s;
+				let entry = {
+					text: rs.text,
+					spans: (rs.spans || []).map(({ start, end, color }) => ({ start, end, color })),
+					pageIndex: s.pageIndex,
+					section: s.section,
+				};
+				if (u.keys[0] === s.key && u.before && u.before.length) entry.before = u.before.slice();
+				if (lastRenderKey === s.key && u.after && u.after.length) entry.after = u.after.slice();
+				store.sentences[s.key] = entry;
+				if (!hasPage) {
+					pageIndex = s.pageIndex ?? 0;
+					hasPage = true;
+				}
+			}
+		}
+		return { sentenceKeys, context, fingerprints, pageIndex };
+	}
+
+	/**
+	 * Create a manual card for the given unit(s), populating store.sentences so
+	 * backHTML(store, card) renders the period with highlights immediately.
+	 */
+	function createManualCard(store, units, question = '') {
+		let { sentenceKeys, context, fingerprints, pageIndex } = storeUnitSentences(store, units);
+		if (!sentenceKeys.length) return null;
+		let cardContext = {};
+		for (let k of sentenceKeys) if (context[k]) cardContext[k] = context[k];
+		let qText = String(question || '').trim();
+		let card = {
+			id: newCardID(),
+			sentenceKeys,
+			context: cardContext,
+			question: qText,
+			originalQuestion: qText,
+			status: 'active',
+			edited: false,
+			manual: true,
+			fingerprints,
+			pageIndex,
+			model: 'manual',
+			createdAt: new Date().toISOString(),
+			ankiNoteId: null,
+		};
+		store.cards.push(card);
+		return card;
 	}
 
 	function activeCards(store) {
@@ -1073,19 +1144,68 @@ var ZotRecallCore = (function () {
 
 	/**
 	 * Edit a card. `back` is sanitized HTML for the back, or null to go back
-	 * to the source sentence(s) built by the code.
+	 * to the source sentence(s) built by the code. `front` is optional sanitized
+	 * HTML for the front (question) when formatted, or null for plain text.
 	 */
-	function editCard(store, cardID, question, back) {
+	function editCard(store, cardID, question, back, front) {
 		let card = store.cards.find(c => c.id === cardID);
 		if (card) {
+			if (card.originalQuestion === undefined) card.originalQuestion = card.question;
 			if (question !== undefined && question !== null) card.question = String(question).trim();
 			if (back !== undefined) {
 				if (back === null || !String(back).trim()) delete card.back;
 				else card.back = String(back);
 			}
+			if (front !== undefined) {
+				let f = front === null ? '' : String(front).trim();
+				if (!f || f === escapeHTML(card.question)) delete card.front;
+				else card.front = f;
+			}
 			card.edited = true;
 		}
 		return card;
+	}
+
+	// ------------------------------------------------------------------
+	// Keyboard shortcuts normalization and matching
+	// ------------------------------------------------------------------
+
+	const DEFAULT_SHORTCUTS = {
+		exclude: 'e',
+		edit: 'm',
+		manualCard: 'g',
+		send: 'Enter',
+		discard: '-',
+	};
+
+	function normalizeShortcutKey(v, def) {
+		if (typeof v !== 'string') return def;
+		let k = v.trim();
+		if (!k) return def;
+		if (/^(enter|invio)$/i.test(k)) return 'Enter';
+		if (/^(space|spazio)$/i.test(k)) return ' ';
+		if (/^(backspace)$/i.test(k)) return 'Backspace';
+		if (/^(delete|canc)$/i.test(k)) return 'Delete';
+		return k.slice(0, 1).toLowerCase();
+	}
+
+	function shortcutDisplayLabel(k) {
+		if (!k) return '';
+		if (k === 'Enter' || /^(enter|invio)$/i.test(k)) return 'Invio';
+		if (k === ' ' || /^(space|spazio)$/i.test(k)) return 'Spazio';
+		if (k === 'Backspace' || /^backspace$/i.test(k)) return '⌫';
+		if (k === 'Delete' || /^(delete|canc)$/i.test(k)) return 'Canc';
+		return String(k).toUpperCase();
+	}
+
+	function matchesShortcut(eventKey, configuredKey) {
+		if (!eventKey || !configuredKey) return false;
+		if (configuredKey === 'Enter' || /^(enter|invio)$/i.test(configuredKey)) return eventKey === 'Enter';
+		if (configuredKey === ' ' || /^(space|spazio)$/i.test(configuredKey)) return eventKey === ' ';
+		if (configuredKey === 'Backspace' || /^backspace$/i.test(configuredKey)) return eventKey === 'Backspace';
+		if (configuredKey === 'Delete' || /^(delete|canc)$/i.test(configuredKey)) return eventKey === 'Delete';
+		if (configuredKey.length === 1) return String(eventKey).toLowerCase() === configuredKey.toLowerCase();
+		return String(eventKey).toLowerCase() === String(configuredKey).toLowerCase();
 	}
 
 	// ------------------------------------------------------------------
@@ -1253,7 +1373,8 @@ var ZotRecallCore = (function () {
 	}
 
 	function frontHTML(card) {
-		return escapeHTML(card.question);
+		if (card && card.front) return ensureHighlightContrast(card.front);
+		return escapeHTML(card ? card.question : '');
 	}
 
 	function csvField(s) {
@@ -1508,10 +1629,16 @@ Return only JSON: {"groups":[{"sentence_ids":["..."],"questions":["..."]}],"skip
 		clearExtend,
 		planGeneration,
 		applyResults,
+		storeUnitSentences,
+		createManualCard,
 		activeCards,
 		discardedCards,
 		setCardStatus,
 		editCard,
+		DEFAULT_SHORTCUTS,
+		normalizeShortcutKey,
+		shortcutDisplayLabel,
+		matchesShortcut,
 		parseTags,
 		ankiSignature,
 		ankiState,

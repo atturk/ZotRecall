@@ -148,11 +148,8 @@ var ZotRecall = {
 
 	getSettings() {
 		let rawShortcuts = this.getJSONPref('shortcuts', {});
-		let normKey = (v, def) => {
-			if (typeof v !== 'string') return def;
-			let k = v.trim().toLowerCase();
-			return k.length ? k.slice(0, 1) : def;
-		};
+		let defs = ZotRecallCore.DEFAULT_SHORTCUTS;
+		let normKey = (v, def) => ZotRecallCore.normalizeShortcutKey(v, def);
 		return {
 			model: this.getPref('model') || 'openai/gpt-6-luna',
 			language: this.getPref('language') || 'Italiano',
@@ -164,8 +161,11 @@ var ZotRecall = {
 			ankiKey: this.getPref('ankiKey') || '',
 			closeOnOutsideClick: !!this.getPref('closeOnOutsideClick'),
 			shortcuts: {
-				exclude: normKey(rawShortcuts.exclude, 'e'),
-				edit: normKey(rawShortcuts.edit, 'm'),
+				exclude: normKey(rawShortcuts.exclude, defs.exclude),
+				edit: normKey(rawShortcuts.edit, defs.edit),
+				manualCard: normKey(rawShortcuts.manualCard, defs.manualCard),
+				send: normKey(rawShortcuts.send, defs.send),
+				discard: normKey(rawShortcuts.discard, defs.discard),
 			},
 		};
 	},
@@ -182,14 +182,14 @@ var ZotRecall = {
 		this.setPref('ankiKey', String(s.ankiKey || '').trim());
 		if (s.closeOnOutsideClick !== undefined) this.setPref('closeOnOutsideClick', !!s.closeOnOutsideClick);
 		if (s.shortcuts && typeof s.shortcuts === 'object') {
-			let normKey = (v, def) => {
-				if (typeof v !== 'string') return def;
-				let k = v.trim().toLowerCase();
-				return k.length ? k.slice(0, 1) : def;
-			};
+			let defs = ZotRecallCore.DEFAULT_SHORTCUTS;
+			let normKey = (v, def) => ZotRecallCore.normalizeShortcutKey(v, def);
 			this.setPref('shortcuts', JSON.stringify({
-				exclude: normKey(s.shortcuts.exclude, 'e'),
-				edit: normKey(s.shortcuts.edit, 'm'),
+				exclude: normKey(s.shortcuts.exclude, defs.exclude),
+				edit: normKey(s.shortcuts.edit, defs.edit),
+				manualCard: normKey(s.shortcuts.manualCard, defs.manualCard),
+				send: normKey(s.shortcuts.send, defs.send),
+				discard: normKey(s.shortcuts.discard, defs.discard),
 			}));
 		}
 	},

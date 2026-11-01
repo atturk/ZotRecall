@@ -500,4 +500,57 @@ test('preview subset selection: period badge isolates strictly that period cards
 	assert.equal(fromSent.cards[fromSent.index].id, u2Cards[2].id);
 });
 
+test('manual card creation, formatted front HTML with lists, and shortcut helpers', () => {
+	let doc = makeDoc();
+	let a1 = ann('A1', P1A, 'disc-shaped', 0, 50, 600);
+	let store = Core.emptyStore('X');
+	let { sentences } = Core.extractFromDocument(doc, [a1]);
+	let units = Core.buildUnits(sentences, store);
+
+	// 1. createManualCard creates an active card with the period sentences already in the store
+	let manualCard = Core.createManualCard(store, units, 'Qual è la forma delle piastrine?');
+	assert.ok(manualCard);
+	assert.equal(manualCard.status, 'active');
+	assert.equal(manualCard.manual, true);
+	assert.deepEqual(manualCard.sentenceKeys, units[0].keys);
+	assert.ok(Core.backHTML(store, manualCard).includes('disc-shaped'));
+	assert.equal(Core.unitCards(store, units[0]).length, 1);
+
+	// 2. editCard supports formatted front HTML (e.g. bulleted/numbered lists and bold)
+	Core.editCard(
+		store,
+		manualCard.id,
+		'Quali sono i tipi di granuli?',
+		undefined,
+		'Quali sono i tipi di granuli?<ul><li><b>Alfa</b></li><li><i>Densi</i></li></ul>'
+	);
+	assert.equal(manualCard.originalQuestion, 'Qual è la forma delle piastrine?');
+	assert.equal(manualCard.question, 'Quali sono i tipi di granuli?');
+	assert.equal(
+		Core.frontHTML(manualCard),
+		'Quali sono i tipi di granuli?<ul><li><b>Alfa</b></li><li><i>Densi</i></li></ul>'
+	);
+
+	// Resetting front to plain text removes card.front
+	Core.editCard(store, manualCard.id, 'Domanda semplice?', undefined, null);
+	assert.equal(manualCard.front, undefined);
+	assert.equal(Core.frontHTML(manualCard), 'Domanda semplice?');
+
+	// 3. Shortcut helpers normalize and match Enter/Invio, '-', and single letters
+	assert.equal(Core.normalizeShortcutKey('invio', 'Enter'), 'Enter');
+	assert.equal(Core.normalizeShortcutKey('Enter', 'Enter'), 'Enter');
+	assert.equal(Core.normalizeShortcutKey('-', '-'), '-');
+	assert.equal(Core.normalizeShortcutKey('G', 'g'), 'g');
+	assert.equal(Core.shortcutDisplayLabel('Enter'), 'Invio');
+	assert.equal(Core.shortcutDisplayLabel('-'), '-');
+	assert.equal(Core.shortcutDisplayLabel('g'), 'G');
+	assert.equal(Core.matchesShortcut('Enter', 'Enter'), true);
+	assert.equal(Core.matchesShortcut('Enter', 'Invio'), true);
+	assert.equal(Core.matchesShortcut('-', '-'), true);
+	assert.equal(Core.matchesShortcut('g', 'G'), true);
+	assert.equal(Core.matchesShortcut('G', 'g'), true);
+	assert.equal(Core.matchesShortcut('a', 'g'), false);
+});
+
+
 

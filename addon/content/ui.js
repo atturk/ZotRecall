@@ -154,10 +154,13 @@ var ZotRecallUI = {
 .zr-bar-fill { height: 100%; width: 0; background: var(--zr-accent); transition: width .3s; }
 .zr-meta-row { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--zr-muted); margin-bottom: 8px; }
 .zr-link { border: 0; background: none; color: var(--zr-accent); cursor: pointer; font: inherit; padding: 0; }
-.zr-card { border: 1px solid var(--zr-border); border-radius: 10px; padding: 18px 16px; min-height: 140px; cursor: pointer; outline: none; }
+.zr-card { border: 1px solid var(--zr-border); border-radius: 10px; padding: 18px 16px; min-height: 140px; cursor: default; outline: none; }
 .zr-card:focus-visible { box-shadow: 0 0 0 2px var(--zr-accent); }
-.zr-card-q { font-size: 15px; font-weight: 600; text-align: center; }
-.zr-card-back { margin-top: 14px; padding-top: 10px; border-top: 1px dashed var(--zr-border); }
+.zr-card-q { font-size: 15px; font-weight: 600; text-align: center; cursor: text; min-height: 22px; }
+.zr-card-q:empty::before { content: attr(data-placeholder); color: var(--zr-muted); font-weight: 400; }
+.zr-card-back { margin-top: 14px; padding-top: 10px; border-top: 1px dashed var(--zr-border); cursor: text; }
+.zr-card-q.zr-field-editing, .zr-card-back.zr-field-editing { outline: 2px solid var(--zr-accent); border-radius: 6px; padding: 6px 8px; background: var(--zr-field); cursor: text; }
+.zr-card-q.zr-field-editing { text-align: left; }
 .zr-btn.zr-danger { color: var(--zr-danger); }
 .zr-tag { display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 8px; background: var(--zr-hover); font-size: 10px; }
 .zr-tag-warn { background: #fde8c8; color: #8a5300; }
@@ -177,10 +180,15 @@ var ZotRecallUI = {
 .zr-edit-label:not(:first-child) { margin-top: 12px; }
 .zr-card.zr-editing .zr-edit { font: 600 14px/1.45 system-ui, -apple-system, sans-serif; min-height: 56px; }
 .zr-rich span[style*="background"] { border-radius: 2px; padding: 0 2px; }
+.zr-rich ul, .zr-rich ol { margin: 4px 0; padding-left: 20px; text-align: left; }
+.zr-rich li { margin: 2px 0; }
 .zr-rich-wrap { border: 1px solid var(--zr-border); border-radius: 6px; background: var(--zr-field); }
 .zr-toolbar { display: flex; align-items: center; gap: 2px; padding: 3px 4px; border-bottom: 1px solid var(--zr-border); flex-wrap: wrap; }
+.zr-toolbar.zr-compact-toolbar { margin-bottom: 10px; padding: 2px 5px; border: 1px solid var(--zr-border); border-radius: 6px; background: var(--zr-field); }
+.zr-toolbar-badge { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--zr-muted); padding: 0 6px 0 2px; border-right: 1px solid var(--zr-border); margin-right: 2px; user-select: none; }
 .zr-tool { min-width: 24px; height: 24px; padding: 0 5px; border: 0; border-radius: 4px; background: none; color: var(--zr-fg); font: 13px/24px Georgia, serif; cursor: pointer; }
 .zr-tool:hover { background: var(--zr-hover); }
+.zr-tool-list { font-family: system-ui, sans-serif; font-size: 12px; font-weight: 600; }
 .zr-tool-reset { margin-left: auto; font-family: system-ui, sans-serif; }
 .zr-hl-icon { padding: 0 3px; background: #ffd400; color: #000; border-radius: 2px; font-family: system-ui, sans-serif; font-weight: 600; }
 .zr-colors { display: inline-flex; gap: 3px; padding: 0 4px; align-items: center; }
@@ -302,17 +310,29 @@ var ZotRecallUI = {
 		let win = doc.defaultView;
 		let onKey = (e) => {
 			if (!popup.isConnected) return;
-			if (e.key === 'Escape' && !popup._zrEditing) {
+			let t = e.target;
+			let inEditable = Boolean(
+				popup._zrEditing
+				|| (t && (['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName) || t.isContentEditable || (t.closest && t.closest('[contenteditable="true"]'))))
+			);
+			if (e.key === 'Escape' && !inEditable) {
 				close();
 				return;
 			}
-			if (popup._zrKeys && popup.contains(e.target) && popup._zrKeys(e)) {
+			if (popup._zrKeys && popup._zrKeys(e)) {
 				e.preventDefault();
 				e.stopPropagation();
 			}
 		};
 		let offOutside = null;
 		let close = () => {
+			if (popup._zrOnClose) {
+				try {
+					popup._zrOnClose();
+				}
+				catch (err) {}
+				popup._zrOnClose = null;
+			}
 			this.rememberGeometry(popup);
 			popup.remove();
 			if (offOutside) offOutside();
@@ -452,6 +472,13 @@ var ZotRecallUI = {
 	},
 
 	setView(popup, ...nodes) {
+		if (popup._zrOnClose) {
+			try {
+				popup._zrOnClose();
+			}
+			catch (err) {}
+			popup._zrOnClose = null;
+		}
 		popup._zrRefresh = null;
 		popup._zrKeys = null;
 		popup._zrOnResize = null;
@@ -687,6 +714,7 @@ var ZotRecallUI = {
 					if (!cancelled) status.textContent = `Paragrafi elaborati: ${done} di ${total}`;
 				},
 			});
+			if (typeof ZotRecallSidebar !== 'undefined') await ZotRecallSidebar.render(doc);
 			let lines = [h(doc, 'p', { class: res.created ? 'zr-ok' : 'zr-note', text: `${res.created} carte create.` })];
 			if (res.skipped) lines.push(h(doc, 'p', { class: 'zr-note', text: `${res.skipped} periodi saltati dal modello perché troppo frammentari.` }));
 			if (res.cancelled) lines.push(h(doc, 'p', { class: 'zr-note', text: 'Generazione interrotta.' }));
@@ -711,9 +739,10 @@ var ZotRecallUI = {
 	// ------------------------------------------------------------------
 
 	/**
-	 * Review session: go through the cards, flip, edit front and back, discard,
-	 * send each one to Anki.
-	 * @param {number|{cardID, fromSent}} start index or card to start from
+	 * Review session: go through the cards (always Front + Back), right-click
+	 * Front or Back to edit directly with a compact shared toolbar, discard,
+	 * or send each card to Anki (auto-advancing to the next card).
+	 * @param {number|{cardID, fromSent, cardIDs, sentenceKeys, manualUnits}} start
 	 */
 	showPreview(reader, doc, popup, start = 0) {
 		let h = this.h.bind(this);
@@ -721,38 +750,77 @@ var ZotRecallUI = {
 		let store = this.app.loadStore(attachment);
 		let cfg = this.app.getAnkiConfig();
 		let tags = ZotRecallCore.parseTags(cfg.tags);
+		let manualMode = Boolean(start && typeof start === 'object' && Array.isArray(start.manualUnits) && start.manualUnits.length);
+		let manualCard = null;
+		let manualSaved = false;
+		if (manualMode) {
+			manualCard = ZotRecallCore.createManualCard(store, start.manualUnits, '');
+		}
 		let allActive = ZotRecallCore.activeCards(store);
-		let {
-			cards: initialCards,
-			index,
-			fromSent,
-			unitCardIDs,
-			unitSentenceKeys,
-		} = ZotRecallCore.selectPreviewCards(store, tags, start);
+		let initialCards;
+		let index = 0;
+		let fromSent = false;
+		let unitCardIDs = null;
+		let unitSentenceKeys = null;
+		if (manualMode) {
+			initialCards = manualCard ? [manualCard] : [];
+			index = 0;
+			unitCardIDs = manualCard ? [manualCard.id] : [];
+			unitSentenceKeys = manualCard ? manualCard.sentenceKeys : [];
+		}
+		else {
+			let selected = ZotRecallCore.selectPreviewCards(store, tags, start);
+			initialCards = selected.cards;
+			index = selected.index;
+			fromSent = selected.fromSent;
+			unitCardIDs = selected.unitCardIDs;
+			unitSentenceKeys = selected.unitSentenceKeys;
+		}
 		let sessionIDs = new Set(initialCards.map(c => c.id));
 		let cards = initialCards;
-		let flipped = false;
-		let editing = false;
+		let editingField = manualMode ? 'front' : null; // 'front' | 'back' | null
 		let sending = false;
 		let orphans = new Set();
 		let message = h(doc, 'p', { class: 'zr-note', hidden: true });
 		let body = h(doc, 'div', { class: 'zr-body' });
+		let currentFrontEl = null;
+		let currentBackEl = null;
+		let currentToolbarEl = null;
+
 		let deckLink = h(doc, 'button', {
 			class: 'zr-link zr-deck-link',
 			title: 'Mazzo, tipo di nota e tag usati da "Invia"',
-			onclick: () => this.showAnkiConfig(reader, doc, popup, () => this.showPreview(reader, doc, popup, {
-				cardID: cards[index] && cards[index].id,
-				fromSent,
-				cardIDs: unitCardIDs,
-				sentenceKeys: unitSentenceKeys,
-			})),
+			onclick: async () => {
+				await commitFieldEdit(false);
+				this.showAnkiConfig(reader, doc, popup, () => this.showPreview(reader, doc, popup, {
+					cardID: cards[index] && cards[index].id,
+					fromSent,
+					cardIDs: unitCardIDs,
+					sentenceKeys: unitSentenceKeys,
+				}));
+			},
 		}, cfg.deck ? '→ ' + cfg.deck : 'Scegli il mazzo');
-		let onBack = fromSent ? () => this.showSent(reader, doc, popup) : () => this.showMain(reader, doc, popup);
-		this.setView(popup, this.header(doc, popup, 'Anteprima e invio', { onBack, actions: [deckLink] }), body);
+		let onBack = fromSent
+			? async () => {
+				await commitFieldEdit(false);
+				this.showSent(reader, doc, popup);
+			}
+			: async () => {
+				await commitFieldEdit(false);
+				this.showMain(reader, doc, popup);
+			};
+		this.setView(popup, this.header(doc, popup, manualMode ? 'Crea carta manualmente' : 'Anteprima e invio', { onBack, actions: [deckLink] }), body);
+		if (manualMode && manualCard) {
+			popup._zrOnClose = () => {
+				if (!manualSaved && (!manualCard.question || !manualCard.question.trim())) {
+					ZotRecallCore.deleteCard(store, manualCard.id);
+				}
+			};
+		}
 
 		this.app.extract(attachment).then(({ sentences }) => {
 			orphans = new Set(ZotRecallCore.orphanKeys(store, sentences));
-			if (orphans.size && popup.isConnected && !editing) render();
+			if (orphans.size && popup.isConnected && !editingField) render();
 		}).catch(e => Zotero.logError(e));
 
 		let say = (text, kind = 'note') => {
@@ -763,6 +831,7 @@ var ZotRecallUI = {
 		let save = async () => {
 			try {
 				await this.app.saveStore(attachment, store);
+				if (typeof ZotRecallSidebar !== 'undefined') await ZotRecallSidebar.render(doc);
 			}
 			catch (e) {
 				Zotero.logError(e);
@@ -776,13 +845,87 @@ var ZotRecallUI = {
 			let i = cards.findIndex(c => c.id === cardID);
 			index = i >= 0 ? i : Math.min(index, cards.length - 1);
 		};
-		let move = (delta) => {
+		let commitFieldEdit = async (rerender = true) => {
+			if (!editingField || !cards.length) return;
+			let card = cards[index];
+			let field = editingField;
+			editingField = null;
+			popup._zrEditing = false;
+			if (!card) {
+				if (rerender) render();
+				return;
+			}
+			let changed = false;
+			if (field === 'front' && currentFrontEl) {
+				let text = (currentFrontEl.textContent || '').replace(/\u00a0/g, ' ').trim();
+				if (text) {
+					let rawHTML = currentFrontEl.innerHTML !== undefined && currentFrontEl.innerHTML !== ''
+						? currentFrontEl.innerHTML
+						: ZotRecallCore.escapeHTML(text);
+					let cleanFront = this.sanitizeHTML(doc, rawHTML);
+					let prevFront = this.sanitizeHTML(doc, ZotRecallCore.frontHTML(card));
+					if (text !== (card.question || '') || cleanFront !== prevFront) {
+						let wasNewManual = manualMode && !manualSaved;
+						ZotRecallCore.editCard(store, card.id, text, undefined, cleanFront);
+						if (wasNewManual) delete card.edited;
+						manualSaved = true;
+						changed = true;
+					}
+				}
+			}
+			else if (field === 'back' && currentBackEl) {
+				let text = (currentBackEl.textContent || '').replace(/\u00a0/g, ' ').trim();
+				if (text) {
+					let rawHTML = currentBackEl.innerHTML !== undefined && currentBackEl.innerHTML !== ''
+						? currentBackEl.innerHTML
+						: ZotRecallCore.escapeHTML(text);
+					let cleanBack = this.sanitizeHTML(doc, rawHTML);
+					let prevBack = this.sanitizeHTML(doc, ZotRecallCore.backHTML(store, card));
+					let origBack = this.sanitizeHTML(doc, ZotRecallCore.backHTML(store, Object.assign({}, card, { back: undefined })));
+					if (cleanBack !== prevBack) {
+						ZotRecallCore.editCard(store, card.id, card.question, cleanBack === origBack ? null : cleanBack, undefined);
+						if (manualMode && (card.question || '').trim()) manualSaved = true;
+						changed = true;
+					}
+				}
+			}
+			if (changed) await save();
+			if (rerender) render();
+		};
+		let move = async (delta) => {
+			if (editingField) await commitFieldEdit(false);
 			index = Math.max(0, Math.min(cards.length - 1, index + delta));
-			flipped = false;
 			say('');
 			render();
 		};
+		let discardCurrent = async () => {
+			if (manualMode || !cards.length) return;
+			if (editingField) await commitFieldEdit(false);
+			let card = cards[index];
+			if (!card) return;
+			ZotRecallCore.setCardStatus(store, card.id, 'discarded');
+			sessionIDs.delete(card.id);
+			cards.splice(index, 1);
+			allActive = ZotRecallCore.activeCards(store);
+			index = Math.min(index, Math.max(0, cards.length - 1));
+			say(card.ankiNoteId ? 'Scartata. La nota già in Anki non viene toccata.' : '');
+			render();
+			await save();
+		};
 		let send = async (card) => {
+			if (editingField) await commitFieldEdit(false);
+			card = cards[index] || card;
+			if (!card) return;
+			if (!(card.question || '').trim()) {
+				say('Scrivi prima la domanda sul fronte della carta.', 'error');
+				editingField = 'front';
+				render();
+				return;
+			}
+			if (manualMode && !manualSaved) {
+				manualSaved = true;
+				await save();
+			}
 			let err = this.app.ankiConfigError(cfg);
 			if (err) {
 				say(err, 'error');
@@ -790,22 +933,35 @@ var ZotRecallUI = {
 			}
 			sending = true;
 			render();
+			let succeeded = false;
 			try {
 				let res = await this.app.sendToAnki(attachment, { cardIDs: [card.id], cfg });
 				reload(card.id);
-				if (res.failed.length) say(res.failed[0], 'error');
-				else say(res.added ? `Inviata a ${cfg.deck}.` : res.updated ? 'Aggiornata in Anki.' : 'Già in Anki, identica.', 'ok');
+				if (res.failed.length) {
+					say(res.failed[0], 'error');
+				}
+				else {
+					succeeded = true;
+					say(res.added ? `Inviata a ${cfg.deck}.` : res.updated ? 'Aggiornata in Anki.' : 'Già in Anki, identica.', 'ok');
+				}
 			}
 			catch (e) {
 				Zotero.logError(e);
 				say(e.message || String(e), 'error');
 			}
 			sending = false;
+			if (succeeded && index < cards.length - 1) {
+				index++;
+			}
+			if (typeof ZotRecallSidebar !== 'undefined') await ZotRecallSidebar.render(doc);
 			render();
 		};
 
 		let render = () => {
-			popup._zrEditing = editing;
+			popup._zrEditing = Boolean(editingField);
+			currentFrontEl = null;
+			currentBackEl = null;
+			currentToolbarEl = null;
 			if (!cards.length) {
 				popup._zrOnResize = null;
 				if (allActive.length) {
@@ -821,42 +977,82 @@ var ZotRecallUI = {
 				return;
 			}
 			let card = cards[index];
+			if (typeof ZotRecallSidebar !== 'undefined') {
+				ZotRecallSidebar.highlightCardUnit(doc, card);
+			}
 			let isOrphan = card.sentenceKeys.some(k => orphans.has(k));
 			let state = ZotRecallCore.ankiState(store, card, tags);
-			let face;
-			let editor = null;
-			let questionBox = null;
-			let fitQuestion = null;
-			if (editing) {
-				questionBox = h(doc, 'textarea', { class: 'zr-edit', rows: '1' });
-				questionBox.value = card.question;
-				fitQuestion = () => {
-					if (!questionBox || !questionBox.isConnected) return;
-					questionBox.style.height = 'auto';
-					let sh = questionBox.scrollHeight;
-					if (sh > 0) questionBox.style.height = Math.max(56, sh + 4) + 'px';
-				};
-				questionBox.addEventListener('input', fitQuestion);
-				editor = this.richEditor(doc, ZotRecallCore.backHTML(store, card), {
-					onReset: () => ZotRecallCore.backHTML(store, Object.assign({}, card, { back: undefined })),
-				});
-				face = h(doc, 'div', { class: 'zr-card zr-editing' },
-					h(doc, 'div', { class: 'zr-edit-label', text: 'Domanda' }), questionBox,
-					h(doc, 'div', { class: 'zr-edit-label', text: 'Risposta' }), editor.node);
+
+			let frontEl = h(doc, 'div', {
+				class: 'zr-card-q zr-rich' + (editingField === 'front' ? ' zr-field-editing' : ''),
+				'data-placeholder': 'Tasto destro (o scrivi qui) per inserire la domanda…',
+			});
+			if (card.front) {
+				frontEl.innerHTML = this.sanitizeHTML(doc, ZotRecallCore.frontHTML(card));
 			}
 			else {
-				face = h(doc, 'div', { class: 'zr-card', tabindex: '0', title: 'Clic o spazio per girare' },
-					h(doc, 'div', { class: 'zr-card-q', text: card.question }));
-				if (flipped) {
-					let back = h(doc, 'div', { class: 'zr-card-back zr-rich' });
-					back.innerHTML = this.sanitizeHTML(doc, ZotRecallCore.backHTML(store, card));
-					face.append(back);
+				frontEl.textContent = card.question || '';
+			}
+			let backEl = h(doc, 'div', {
+				class: 'zr-card-back zr-rich' + (editingField === 'back' ? ' zr-field-editing' : ''),
+			});
+			backEl.innerHTML = this.sanitizeHTML(doc, ZotRecallCore.backHTML(store, card));
+
+			currentFrontEl = frontEl;
+			currentBackEl = backEl;
+
+			let attachFieldHandlers = (el, fieldName) => {
+				if (editingField === fieldName) {
+					el.setAttribute('contenteditable', 'true');
+					el.setAttribute('spellcheck', 'false');
+					el.addEventListener('keydown', (e) => {
+						if (e.key === 'Escape' || (e.key === 'Enter' && (e.metaKey || e.ctrlKey))) {
+							e.preventDefault();
+							e.stopPropagation();
+							commitFieldEdit(true);
+						}
+					});
 				}
-				face.addEventListener('click', () => {
-					flipped = !flipped;
+				el.addEventListener('contextmenu', async (e) => {
+					e.preventDefault();
+					e.stopPropagation();
+					if (editingField === fieldName) return;
+					if (editingField) await commitFieldEdit(false);
+					editingField = fieldName;
+					say('');
 					render();
 				});
+			};
+			attachFieldHandlers(frontEl, 'front');
+			attachFieldHandlers(backEl, 'back');
+
+			let toolbarNode = null;
+			if (editingField === 'front') {
+				toolbarNode = this.inlineToolbar(doc, frontEl, {
+					label: 'Fronte',
+					onReset: () => ZotRecallCore.escapeHTML(card.originalQuestion !== undefined ? card.originalQuestion : (card.question || '')),
+				});
+				currentToolbarEl = toolbarNode;
 			}
+			else if (editingField === 'back') {
+				toolbarNode = this.inlineToolbar(doc, backEl, {
+					label: 'Retro',
+					onReset: () => ZotRecallCore.backHTML(store, Object.assign({}, card, { back: undefined })),
+				});
+				currentToolbarEl = toolbarNode;
+			}
+
+			let face = h(doc, 'div', { class: 'zr-card', tabindex: '0' },
+				toolbarNode,
+				frontEl,
+				backEl);
+			face.addEventListener('mousedown', (e) => {
+				if (!editingField) return;
+				let activeEl = editingField === 'front' ? frontEl : backEl;
+				if ((activeEl && activeEl.contains(e.target)) || (toolbarNode && toolbarNode.contains(e.target))) return;
+				commitFieldEdit(true);
+			});
+
 			let pageLink = h(doc, 'button', { class: 'zr-link', text: `pag. ${(card.pageIndex ?? 0) + 1}`, title: 'Vai alla pagina' });
 			pageLink.addEventListener('click', () => {
 				try {
@@ -872,61 +1068,40 @@ var ZotRecallUI = {
 			if (card.edited) badges.push(h(doc, 'span', { class: 'zr-tag', text: 'modificata' }));
 			if (isOrphan) badges.push(h(doc, 'span', { class: 'zr-tag zr-tag-warn', text: 'orfana', title: 'Il periodo non è più evidenziato' }));
 
-			let actions;
-			if (editing) {
-				let cancel = h(doc, 'button', { class: 'zr-btn', text: 'Annulla', onclick: () => {
-					editing = false;
-					render();
-				} });
-				let ok = h(doc, 'button', { class: 'zr-btn zr-primary', text: 'Salva' });
-				ok.addEventListener('click', async () => {
-					let text = questionBox.value.trim();
-					if (!text) return;
-					let original = ZotRecallCore.backHTML(store, Object.assign({}, card, { back: undefined }));
-					let back = this.sanitizeHTML(doc, editor.getHTML());
-					ZotRecallCore.editCard(store, card.id, text, back === this.sanitizeHTML(doc, original) ? null : back);
-					editing = false;
-					render();
-					await save();
-				});
-				actions = h(doc, 'div', { class: 'zr-footer' }, cancel, ok);
+			let shortcuts = (this.app.getSettings && this.app.getSettings().shortcuts) || ZotRecallCore.DEFAULT_SHORTCUTS;
+			let sendKeyLabel = ZotRecallCore.shortcutDisplayLabel(shortcuts.send || 'Enter');
+			let discardKeyLabel = ZotRecallCore.shortcutDisplayLabel(shortcuts.discard || '-');
+
+			let sendLabel = sending ? 'Invio…' : state === 'sent' ? 'Inviata ✓' : state === 'changed' ? 'Aggiorna' : 'Invia';
+			let sendBtn = h(doc, 'button', {
+				class: 'zr-btn zr-primary',
+				text: sendLabel,
+				disabled: sending || state === 'sent',
+				title: state === 'sent'
+					? 'Questa carta è già in Anki, identica'
+					: (state === 'changed' ? `Aggiorna la nota già in Anki (${sendKeyLabel})` : `Invia questa carta ad Anki (${sendKeyLabel})`),
+				onclick: () => send(card),
+			});
+			let centerButtons = [];
+			if (!manualMode) {
+				centerButtons.push(h(doc, 'button', {
+					class: 'zr-btn zr-danger',
+					text: 'Scarta',
+					title: `Scarta questa carta (${discardKeyLabel})`,
+					onclick: () => discardCurrent(),
+				}));
 			}
-			else {
-				let sendLabel = sending ? 'Invio…' : state === 'sent' ? 'Inviata ✓' : state === 'changed' ? 'Aggiorna' : 'Invia';
-				let sendBtn = h(doc, 'button', {
-					class: 'zr-btn zr-primary',
-					text: sendLabel,
-					disabled: sending || state === 'sent',
-					title: state === 'sent' ? 'Questa carta è già in Anki, identica' : state === 'changed' ? 'Aggiorna la nota già in Anki' : 'Invia questa carta ad Anki',
-					onclick: () => send(card),
-				});
-				actions = h(doc, 'div', { class: 'zr-footer zr-session' },
-					h(doc, 'button', { class: 'zr-btn', text: '←', title: 'Precedente (←)', disabled: index === 0, onclick: () => move(-1) }),
-					h(doc, 'div', { class: 'zr-row zr-wrap' },
-						h(doc, 'button', { class: 'zr-btn', text: 'Modifica', onclick: () => {
-							editing = true;
-							say('');
-							render();
-						} }),
-						h(doc, 'button', { class: 'zr-btn zr-danger', text: 'Scarta', onclick: async () => {
-							ZotRecallCore.setCardStatus(store, card.id, 'discarded');
-							sessionIDs.delete(card.id);
-							cards.splice(index, 1);
-							allActive = ZotRecallCore.activeCards(store);
-							index = Math.min(index, cards.length - 1);
-							flipped = false;
-							say(card.ankiNoteId ? 'Scartata. La nota già in Anki non viene toccata.' : '');
-							render();
-							await save();
-						} }),
-						h(doc, 'button', { class: 'zr-btn', text: flipped ? 'Domanda' : 'Gira', onclick: () => {
-							flipped = !flipped;
-							render();
-						} }),
-						sendBtn),
-					h(doc, 'button', { class: 'zr-btn', text: '→', title: 'Successiva (→)', disabled: index === cards.length - 1, onclick: () => move(1) }));
-			}
+			centerButtons.push(sendBtn);
+
+			let actions = h(doc, 'div', { class: 'zr-footer zr-session' },
+				h(doc, 'button', { class: 'zr-btn', text: '←', title: 'Precedente (←)', disabled: index === 0, onclick: () => move(-1) }),
+				h(doc, 'div', { class: 'zr-row zr-wrap' }, ...centerButtons),
+				h(doc, 'button', { class: 'zr-btn', text: '→', title: 'Successiva (→)', disabled: index === cards.length - 1, onclick: () => move(1) }));
+
 			let sentCount = cards.filter(c => ZotRecallCore.ankiState(store, c, tags) === 'sent').length;
+			let hintParts = [`${sentCount} di ${cards.length} già in Anki`, 'tasto destro modifica', `${sendKeyLabel} invia`];
+			if (!manualMode) hintParts.push(`${discardKeyLabel} scarta`);
+			hintParts.push('← → scorri');
 			body.replaceChildren(
 				h(doc, 'div', { class: 'zr-meta-row' },
 					h(doc, 'span', {}, `${index + 1} di ${cards.length} `, ...badges),
@@ -934,60 +1109,109 @@ var ZotRecallUI = {
 				face,
 				actions,
 				message,
-				h(doc, 'p', { class: 'zr-note zr-center', text: `${sentCount} di ${cards.length} già in Anki · spazio gira, ← → per scorrere` }));
-			popup._zrOnResize = fitQuestion;
-			if (editing) {
-				fitQuestion();
-				try {
-					doc.defaultView.requestAnimationFrame(fitQuestion);
-				}
-				catch (e) {}
-				questionBox.focus();
+				h(doc, 'p', { class: 'zr-note zr-center', text: hintParts.join(' · ') }));
+
+			if (editingField === 'front') {
+				frontEl.focus();
+			}
+			else if (editingField === 'back') {
+				backEl.focus();
 			}
 			else {
 				face.focus();
 			}
 		};
 		popup._zrKeys = (e) => {
-			if (!cards.length || editing || ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName) || e.target.isContentEditable) return false;
-			if (e.key === ' ') {
-				flipped = !flipped;
-				render();
+			if (!cards.length || editingField || popup._zrEditing || sending) return false;
+			let t = e.target;
+			if (t && (['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName) || t.isContentEditable || (t.closest && t.closest('[contenteditable="true"]')))) {
+				return false;
 			}
-			else if (e.key === 'ArrowRight') move(1);
-			else if (e.key === 'ArrowLeft') move(-1);
-			else return false;
-			return true;
+			if (e.metaKey || e.ctrlKey || e.altKey) return false;
+			let shortcuts = (this.app.getSettings && this.app.getSettings().shortcuts) || ZotRecallCore.DEFAULT_SHORTCUTS;
+			let sendKey = shortcuts.send || 'Enter';
+			let discardKey = shortcuts.discard || '-';
+			if (ZotRecallCore.matchesShortcut(e.key, sendKey)) {
+				let card = cards[index];
+				let state = card && ZotRecallCore.ankiState(store, card, tags);
+				if (card && state !== 'sent') send(card);
+				else if (index < cards.length - 1) move(1);
+				return true;
+			}
+			if (!manualMode && ZotRecallCore.matchesShortcut(e.key, discardKey)) {
+				discardCurrent();
+				return true;
+			}
+			if (e.key === 'ArrowRight') {
+				move(1);
+				return true;
+			}
+			if (e.key === 'ArrowLeft') {
+				move(-1);
+				return true;
+			}
+			return false;
 		};
 		render();
 	},
 
 	/**
-	 * Minimal rich text editor: bold, italic, underline, highlight colors
-	 * (hidden until needed), reset to the original back.
-	 * @returns {{node, getHTML}}
+	 * Compact shared formatting toolbar bound to an inline-editable field
+	 * (Front or Back): bold, italic, underline, bulleted list, numbered list,
+	 * highlight colors, and reset to original.
 	 */
-	richEditor(doc, html, { onReset } = {}) {
+	inlineToolbar(doc, area, { label, onReset } = {}) {
 		let h = this.h.bind(this);
-		let area = h(doc, 'div', { class: 'zr-rich zr-rich-edit', contenteditable: 'true', spellcheck: 'false' });
-		area.innerHTML = this.sanitizeHTML(doc, html);
 		let exec = (cmd, value = null, css = false) => {
 			area.focus();
 			try {
-				doc.execCommand('styleWithCSS', false, css);
+				if (typeof doc.execCommand === 'function') {
+					try {
+						doc.execCommand('styleWithCSS', false, css);
+					}
+					catch (e) {}
+					doc.execCommand(cmd, false, value);
+				}
 			}
 			catch (e) {}
-			doc.execCommand(cmd, false, value);
+		};
+		let toggleList = (tag) => {
+			area.focus();
+			let cmd = tag === 'ul' ? 'insertUnorderedList' : 'insertOrderedList';
+			let handled = false;
+			if (typeof doc.execCommand === 'function') {
+				try {
+					handled = Boolean(doc.execCommand(cmd, false, null));
+				}
+				catch (e) {}
+			}
+			if (!handled) {
+				let existing = area.querySelector && area.querySelector(tag);
+				if (existing) {
+					let items = Array.from(existing.querySelectorAll('li')).map(li => li.innerHTML || li.textContent);
+					existing.replaceWith(doc.createTextNode(items.join('\n')));
+				}
+				else {
+					let listEl = doc.createElement(tag);
+					let lines = (area.textContent || '').split(/\n+/).map(s => s.trim()).filter(Boolean);
+					if (!lines.length) lines = [''];
+					for (let line of lines) {
+						let li = doc.createElement('li');
+						li.textContent = line;
+						listEl.append(li);
+					}
+					area.replaceChildren(listEl);
+				}
+			}
 		};
 		// Keep the selection when clicking toolbar buttons
-		let tool = (label, title, fn, cls = '') => h(doc, 'button', {
+		let tool = (content, title, fn, cls = '') => h(doc, 'button', {
 			class: 'zr-tool ' + cls,
 			title,
 			type: 'button',
 			onmousedown: e => e.preventDefault(),
 			onclick: fn,
-		}, label);
-		// Highlight by wrapping the selection: same result in every engine
+		}, content);
 		let clearHighlightStyle = (sp) => {
 			sp.style.backgroundColor = '';
 			sp.style.color = '';
@@ -995,7 +1219,7 @@ var ZotRecallUI = {
 			sp.style.padding = '';
 		};
 		let highlight = (color) => {
-			let sel = doc.getSelection();
+			let sel = doc.getSelection && doc.getSelection();
 			if (!sel || !sel.rangeCount) return;
 			let r = sel.getRangeAt(0);
 			if (r.collapsed || !area.contains(r.commonAncestorContainer)) return;
@@ -1052,17 +1276,33 @@ var ZotRecallUI = {
 		ZotRecallCore.ZOTERO_COLORS.forEach((c, i) => {
 			colors.children[i].style.backgroundColor = c.hex;
 		});
-		let bar = h(doc, 'div', { class: 'zr-toolbar' },
+		return h(doc, 'div', { class: 'zr-toolbar zr-compact-toolbar' },
+			label ? h(doc, 'span', { class: 'zr-toolbar-badge', text: label }) : null,
 			tool(h(doc, 'b', { text: 'B' }), 'Grassetto (⌘B)', () => exec('bold')),
 			tool(h(doc, 'i', { text: 'I' }), 'Corsivo (⌘I)', () => exec('italic')),
 			tool(h(doc, 'u', { text: 'U' }), 'Sottolineato (⌘U)', () => exec('underline')),
+			tool('•≡', 'Elenco puntato', () => toggleList('ul'), 'zr-tool-list'),
+			tool('1.', 'Elenco numerato', () => toggleList('ol'), 'zr-tool-list'),
 			tool(h(doc, 'span', { class: 'zr-hl-icon', text: 'A' }), 'Evidenzia', () => {
 				colors.hidden = !colors.hidden;
 			}),
 			colors,
-			onReset ? tool('↺', 'Ripristina il periodo originale', () => {
-				area.innerHTML = this.sanitizeHTML(doc, onReset());
+			onReset ? tool('↺', 'Ripristina testo originale', () => {
+				let orig = onReset();
+				area.innerHTML = this.sanitizeHTML(doc, orig);
+				if (!area.innerHTML && orig) area.textContent = orig;
 			}, 'zr-tool-reset') : null);
+	},
+
+	/**
+	 * Minimal rich text editor wrapper (kept for compatibility).
+	 * @returns {{node, getHTML}}
+	 */
+	richEditor(doc, html, { onReset } = {}) {
+		let h = this.h.bind(this);
+		let area = h(doc, 'div', { class: 'zr-rich zr-rich-edit', contenteditable: 'true', spellcheck: 'false' });
+		area.innerHTML = this.sanitizeHTML(doc, html);
+		let bar = this.inlineToolbar(doc, area, { onReset });
 		return {
 			node: h(doc, 'div', { class: 'zr-rich-wrap' }, bar, area),
 			getHTML: () => ZotRecallCore.ensureHighlightContrast(area.innerHTML),
@@ -1070,14 +1310,22 @@ var ZotRecallUI = {
 	},
 
 	/**
-	 * Keep only simple formatting: b, i, u, br, div and spans with a
+	 * Keep only simple formatting: b, i, u, br, div, ul, ol, li and spans with a
 	 * background color or basic font styles. Everything else is unwrapped.
 	 */
 	sanitizeHTML(doc, html) {
 		let tpl = doc.createElement('template');
 		tpl.innerHTML = String(html || '');
 		let out = doc.createElement('div');
-		let ALLOWED = { B: 'b', STRONG: 'b', I: 'i', EM: 'i', U: 'u', BR: 'br', DIV: 'div', P: 'div', SPAN: 'span' };
+		let ALLOWED = {
+			B: 'b', STRONG: 'b',
+			I: 'i', EM: 'i',
+			U: 'u',
+			BR: 'br',
+			DIV: 'div', P: 'div',
+			UL: 'ul', OL: 'ol', LI: 'li',
+			SPAN: 'span',
+		};
 		let walk = (src, dst) => {
 			for (let n of Array.from(src.childNodes)) {
 				if (n.nodeType === 3) {
@@ -1684,24 +1932,36 @@ var ZotRecallUI = {
 		outside.checked = !!s.closeOnOutsideClick;
 
 		let makeShortcutInput = (val, def) => {
+			let normalized = ZotRecallCore.normalizeShortcutKey(val, def);
 			let inp = h(doc, 'input', {
 				type: 'text',
-				value: String(val || def).toUpperCase(),
-				maxlength: '1',
-				style: { width: '56px', textAlign: 'center', fontWeight: '600', textTransform: 'uppercase' },
+				value: ZotRecallCore.shortcutDisplayLabel(normalized),
+				style: { width: '76px', textAlign: 'center', fontWeight: '600' },
 			});
+			inp._zrRawKey = normalized;
 			inp.addEventListener('keydown', (e) => {
-				if (e.metaKey || e.ctrlKey || e.altKey) return;
-				if (e.key && e.key.length === 1 && !/\s/.test(e.key)) {
+				if (e.metaKey || e.ctrlKey || e.altKey || e.key === 'Tab') return;
+				if (e.key === 'Enter' || e.key === ' ' || e.key === 'Backspace' || e.key === 'Delete' || (e.key && e.key.length === 1 && !/\s/.test(e.key))) {
 					e.preventDefault();
 					e.stopPropagation();
-					inp.value = e.key.toUpperCase();
+					let raw = ZotRecallCore.normalizeShortcutKey(e.key, def);
+					inp._zrRawKey = raw;
+					inp.value = ZotRecallCore.shortcutDisplayLabel(raw);
 				}
+			});
+			inp.addEventListener('input', () => {
+				let raw = ZotRecallCore.normalizeShortcutKey(inp.value, def);
+				inp._zrRawKey = raw;
+				inp.value = ZotRecallCore.shortcutDisplayLabel(raw);
 			});
 			return inp;
 		};
-		let scExcludeInput = makeShortcutInput(s.shortcuts && s.shortcuts.exclude, 'E');
-		let scEditInput = makeShortcutInput(s.shortcuts && s.shortcuts.edit, 'M');
+		let readShortcut = (inp, def) => ZotRecallCore.normalizeShortcutKey(inp._zrRawKey || inp.value, def);
+		let scExcludeInput = makeShortcutInput(s.shortcuts && s.shortcuts.exclude, 'e');
+		let scEditInput = makeShortcutInput(s.shortcuts && s.shortcuts.edit, 'm');
+		let scManualCardInput = makeShortcutInput(s.shortcuts && s.shortcuts.manualCard, 'g');
+		let scSendInput = makeShortcutInput(s.shortcuts && s.shortcuts.send, 'Enter');
+		let scDiscardInput = makeShortcutInput(s.shortcuts && s.shortcuts.discard, '-');
 
 		let collect = () => ({
 			model: modelInput.value,
@@ -1714,8 +1974,11 @@ var ZotRecallUI = {
 			ankiKey: ankiKey.value,
 			closeOnOutsideClick: outside.checked,
 			shortcuts: {
-				exclude: (scExcludeInput.value || 'e').trim().toLowerCase(),
-				edit: (scEditInput.value || 'm').trim().toLowerCase(),
+				exclude: readShortcut(scExcludeInput, 'e'),
+				edit: readShortcut(scEditInput, 'm'),
+				manualCard: readShortcut(scManualCardInput, 'g'),
+				send: readShortcut(scSendInput, 'Enter'),
+				discard: readShortcut(scDiscardInput, '-'),
 			},
 		});
 
@@ -1782,7 +2045,13 @@ var ZotRecallUI = {
 			h(doc, 'p', { class: 'zr-note', style: { marginTop: '0', marginBottom: '8px' }, text: 'Usa le frecce ↑ e ↓ per scorrere i periodi nella barra laterale.' }),
 			h(doc, 'div', { class: 'zr-row', style: { alignItems: 'flex-start' } },
 				h(doc, 'div', { style: { flex: '1' } }, field('Escludi / includi periodo', scExcludeInput)),
-				h(doc, 'div', { style: { flex: '1' } }, field('Modifica periodo', scEditInput))),
+				h(doc, 'div', { style: { flex: '1' } }, field('Modifica periodo', scEditInput)),
+				h(doc, 'div', { style: { flex: '1' } }, field('Crea carta manualmente', scManualCardInput))),
+			h(doc, 'div', { class: 'zr-section', text: 'Scorciatoie da tastiera (anteprima e invio)' }),
+			h(doc, 'p', { class: 'zr-note', style: { marginTop: '0', marginBottom: '8px' }, text: 'Attive quando non stai modificando il testo di un campo.' }),
+			h(doc, 'div', { class: 'zr-row', style: { alignItems: 'flex-start' } },
+				h(doc, 'div', { style: { flex: '1' } }, field('Invia carta ad Anki', scSendInput)),
+				h(doc, 'div', { style: { flex: '1' } }, field('Scarta carta', scDiscardInput))),
 			h(doc, 'div', { class: 'zr-section', text: 'Finestra' }),
 			h(doc, 'label', { class: 'zr-color-row' }, outside, 'Chiudi la finestra cliccando fuori'),
 			h(doc, 'div', { class: 'zr-footer' }, save),

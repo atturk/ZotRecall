@@ -202,13 +202,43 @@ function createMockDOM() {
 				this.append(doc.createTextNode(String(v)));
 			}
 		}
+		get innerHTML() {
+			let serialize = (node) => {
+				if (node.nodeType === 3) return Core.escapeHTML(node.textContent);
+				if (node.nodeType !== 1) return '';
+				let tag = node.tagName.toLowerCase();
+				if (tag === 'br') return '<br>';
+				let styleParts = [];
+				if (node.style) {
+					if (node.style.backgroundColor) styleParts.push(`background-color:${node.style.backgroundColor}`);
+					if (node.style.color) styleParts.push(`color:${node.style.color}`);
+					if (node.style.borderRadius) styleParts.push(`border-radius:${node.style.borderRadius}`);
+					if (node.style.padding) styleParts.push(`padding:${node.style.padding}`);
+					if (node.style.fontWeight) styleParts.push(`font-weight:${node.style.fontWeight}`);
+					if (node.style.fontStyle) styleParts.push(`font-style:${node.style.fontStyle}`);
+					if (node.style.textDecoration) styleParts.push(`text-decoration:${node.style.textDecoration}`);
+				}
+				let attrStr = styleParts.length ? ` style="${styleParts.join(';')}"` : '';
+				let inner = node.childNodes.map(serialize).join('');
+				return `<${tag}${attrStr}>${inner}</${tag}>`;
+			};
+			return this.childNodes.map(serialize).join('');
+		}
+		set innerHTML(html) {
+			this.replaceChildren();
+			parseHTMLInto(String(html || ''), this);
+		}
+		getAttribute(k) {
+			if (k === 'style' && this.style) {
+				let parts = Object.entries(this.style).filter(([, v]) => v).map(([k2, v]) => `${k2}:${v}`);
+				if (parts.length) return parts.join(';');
+			}
+			return this.attributes.has(k) ? this.attributes.get(k) : null;
+		}
 		setAttribute(k, v) {
 			if (k === 'disabled') this.disabled = true;
 			if (k === 'hidden') this.hidden = true;
 			this.attributes.set(k, String(v));
-		}
-		getAttribute(k) {
-			return this.attributes.has(k) ? this.attributes.get(k) : null;
 		}
 		hasAttribute(k) {
 			return this.attributes.has(k);
@@ -300,6 +330,44 @@ function createMockDOM() {
 		}, props);
 	}
 
+	function parseHTMLInto(html, root) {
+		let stack = [root];
+		let re = /<\/?([a-zA-Z0-9]+)([^>]*)>|([^<]+)/g;
+		let m;
+		while ((m = re.exec(html)) !== null) {
+			if (m[3] !== undefined) {
+				let txt = m[3]
+					.replace(/&lt;/g, '<')
+					.replace(/&gt;/g, '>')
+					.replace(/&quot;/g, '"')
+					.replace(/&amp;/g, '&');
+				stack[stack.length - 1].append(doc.createTextNode(txt));
+				continue;
+			}
+			let rawTag = m[0];
+			let tag = m[1].toLowerCase();
+			let attrs = m[2] || '';
+			if (rawTag.startsWith('</')) {
+				if (stack.length > 1) stack.pop();
+				continue;
+			}
+			let el = new MockElement(tag);
+			let styleMatch = attrs.match(/style\s*=\s*["']([^"']*)["']/i);
+			if (styleMatch) {
+				for (let decl of styleMatch[1].split(';')) {
+					let [prop, val] = decl.split(':').map(s => s && s.trim());
+					if (!prop || !val) continue;
+					let camel = prop.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+					el.style[camel] = val;
+				}
+			}
+			stack[stack.length - 1].append(el);
+			if (tag !== 'br' && !rawTag.endsWith('/>')) {
+				stack.push(el);
+			}
+		}
+	}
+
 	let doc = {
 		documentElement: null,
 		head: null,
@@ -312,9 +380,9 @@ function createMockDOM() {
 				let tpl = new MockElement('template');
 				tpl.content = content;
 				Object.defineProperty(tpl, 'innerHTML', {
-					get: () => content.textContent,
+					get: () => content.innerHTML,
 					set: (html) => {
-						content.textContent = String(html || '');
+						content.innerHTML = String(html || '');
 					},
 				});
 				return tpl;
@@ -797,4 +865,176 @@ test('context menu items, deck autocomplete, and general preview filtering of se
 	let popup = doc.getElementById('zotrecall-popup');
 	assert.ok(popup.querySelector('.zr-meta-row').textContent.startsWith('1 di 2 '), 'only the 2 unsent cards appear in general preview');
 });
+
+test('review QoL: always front+back without flip/tooltip, right-click inline editing with lists, Enter send + auto-advance, - discard, shortcuts ignored while editing', async () => {
+	let { doc, makeEvent, UI, Sidebar } = loadEnvironment();
+	let { sentences, store } = makeThreeSentencesAndStore();
+	let { app, reader } = makeFixtureApp(sentences, store);
+	let sentCardIDs = [];
+	app.ankiConfigError = () => null;
+	app.sendToAnki = async (_att, { cardIDs }) => {
+		let tags = Core.parseTags(app.getAnkiConfig().tags);
+		for (let id of cardIDs) {
+			let card = store.cards.find(c => c.id === id);
+			if (card) {
+				Core.markSent(store, card, { noteId: 900 + sentCardIDs.length, deck: 'Medicina::Patologia', tags });
+				sentCardIDs.push(id);
+			}
+		}
+		return { added: cardIDs.length, updated: 0, skipped: 0, failed: [] };
+	};
+	reader._iframeWindow = { document: doc };
+	UI.init(app);
+	Sidebar.init(app, UI);
+
+	Sidebar.ensure(reader, doc);
+	Sidebar.activate(doc);
+	await Sidebar.render(doc);
+
+	// Open preview on all 6 unsent cards
+	UI.open(reader, 'preview');
+	let popup = doc.getElementById('zotrecall-popup');
+	assert.ok(popup);
+
+	// 1. Both Front (.zr-card-q) and Back (.zr-card-back) are immediately visible;
+	//    no "Clic o spazio per girare" tooltip, no "Modifica" button, no "Gira"/"Domanda" button.
+	let cardBox = popup.querySelector('.zr-card');
+	let frontEl = popup.querySelector('.zr-card-q');
+	let backEl = popup.querySelector('.zr-card-back');
+	assert.ok(frontEl, 'front is visible');
+	assert.ok(backEl, 'back is visible without flipping');
+	assert.equal(cardBox.getAttribute('title'), null, 'flip tooltip removed from card');
+	let buttonTexts = popup.querySelectorAll('.zr-footer .zr-btn').map(b => b.textContent);
+	assert.ok(!buttonTexts.includes('Modifica'), 'Modifica button removed');
+	assert.ok(!buttonTexts.includes('Gira'), 'Gira button removed');
+	assert.ok(!buttonTexts.includes('Domanda'), 'Domanda button removed');
+	assert.ok(buttonTexts.includes('Scarta'), 'Scarta button present in normal review');
+	assert.ok(buttonTexts.includes('Invia'), 'Invia button present');
+
+	// Sidebar automatically selected the period corresponding to card 1 (period 1)
+	let sbState = Sidebar._states.get(doc);
+	assert.deepEqual(Array.from(sbState.selected), [sentences[0].key], 'sidebar auto-selected current card period');
+
+	// 2. Right-clicking Front enters inline edit mode with the compact shared toolbar (including bulleted & numbered lists)
+	frontEl.dispatchEvent(makeEvent('contextmenu', { target: frontEl }));
+	await new Promise(r => setImmediate(r));
+	frontEl = popup.querySelector('.zr-card-q');
+	let toolbar = popup.querySelector('.zr-compact-toolbar');
+	assert.ok(toolbar, 'compact toolbar appears on right-click');
+	assert.equal(toolbar.querySelector('.zr-toolbar-badge').textContent, 'Fronte');
+	assert.equal(frontEl.getAttribute('contenteditable'), 'true');
+	assert.equal(frontEl.classList.contains('zr-field-editing'), true);
+
+	// While editing Front, pressing Enter or '-' must NEVER send or discard the card
+	let countBefore = Core.activeCards(store).length;
+	doc.dispatchEvent(makeEvent('keydown', { key: 'Enter', target: frontEl }));
+	doc.dispatchEvent(makeEvent('keydown', { key: '-', target: frontEl }));
+	assert.equal(sentCardIDs.length, 0, 'Enter inside editable field did NOT send card');
+	assert.equal(Core.activeCards(store).length, countBefore, '"-" inside editable field did NOT discard card');
+
+	// Use bulleted list button ('•≡') in the toolbar on Front
+	frontEl.textContent = 'Punto A\nPunto B';
+	let listBtns = toolbar.querySelectorAll('.zr-tool-list');
+	assert.equal(listBtns.length, 2, 'bulleted and numbered list buttons in toolbar');
+	listBtns[0].click(); // bulleted list
+	assert.ok(frontEl.innerHTML.includes('<ul><li>Punto A</li><li>Punto B</li></ul>'), 'bulleted list created in Front');
+
+	// Commit edit via Escape -> saves formatted front HTML and exits edit mode
+	frontEl.dispatchEvent(makeEvent('keydown', { key: 'Escape', target: frontEl }));
+	await new Promise(r => setImmediate(r));
+	assert.equal(popup._zrEditing, false, 'exited inline edit mode');
+	let card0 = Core.activeCards(store)[0];
+	assert.ok(card0.front && card0.front.includes('<ul><li>Punto A</li><li>Punto B</li></ul>'), 'formatted front persisted on card');
+
+	// 3. Right-clicking Back enters inline edit mode for Back with the same compact toolbar
+	backEl = popup.querySelector('.zr-card-back');
+	backEl.dispatchEvent(makeEvent('contextmenu', { target: backEl }));
+	await new Promise(r => setImmediate(r));
+	toolbar = popup.querySelector('.zr-compact-toolbar');
+	assert.ok(toolbar, 'compact toolbar appears for Back');
+	assert.equal(toolbar.querySelector('.zr-toolbar-badge').textContent, 'Retro');
+	backEl = popup.querySelector('.zr-card-back');
+	backEl.dispatchEvent(makeEvent('keydown', { key: 'Escape', target: backEl }));
+	await new Promise(r => setImmediate(r));
+
+	// 4. Pressing Enter (outside editable fields) sends card 1 to Anki AND automatically advances to card 2 (2 di 6)
+	assert.ok(popup.querySelector('.zr-meta-row').textContent.startsWith('1 di 6 '));
+	doc.dispatchEvent(makeEvent('keydown', { key: 'Enter', target: doc.body }));
+	await new Promise(r => setImmediate(r));
+	await new Promise(r => setImmediate(r));
+	assert.equal(sentCardIDs.length, 1, 'Enter shortcut sent card 1 to Anki');
+	assert.ok(popup.querySelector('.zr-meta-row').textContent.startsWith('2 di 6 '), 'automatically advanced to card 2 after sending');
+	// And sidebar auto-selected period 2 (linked to card 2)
+	assert.deepEqual(Array.from(sbState.selected), [sentences[1].key], 'sidebar auto-selected period 2 when advancing to card 2');
+
+	// 5. Pressing '-' discards the current card (card 2)
+	doc.dispatchEvent(makeEvent('keydown', { key: '-', target: doc.body }));
+	await new Promise(r => setImmediate(r));
+	assert.equal(Core.discardedCards(store).length, 1, '"-" shortcut discarded current card');
+	assert.ok(popup.querySelector('.zr-meta-row').textContent.startsWith('2 di 5 '), 'remaining session cards updated to 5');
+});
+
+test('sidebar immediate refresh after generation and manual card creation (shortcut G) with no Scarta button', async () => {
+	let { doc, makeEvent, UI, Sidebar } = loadEnvironment();
+	let { sentences } = makeThreeSentencesAndStore();
+	// Start with an empty store so all 3 periods are "Da generare"
+	let freshStore = Core.emptyStore('ATT1');
+	let { app, reader } = makeFixtureApp(sentences, freshStore);
+	app.generate = async (_att) => {
+		let groups = Core.planGeneration(sentences, freshStore);
+		let [g0] = groups;
+		let { idMap } = Core.buildMessages(g0);
+		Core.applyResults(freshStore, g0, Core.parseResponse('{"groups":[{"sentence_ids":["s1"],"questions":["Generated Q1?"]}],"skipped":[]}', idMap).results);
+		return { created: 1, skipped: 0, cancelled: false, failed: [] };
+	};
+	reader._iframeWindow = { document: doc };
+	UI.init(app);
+	Sidebar.init(app, UI);
+
+	Sidebar.ensure(reader, doc);
+	Sidebar.activate(doc);
+	await Sidebar.render(doc);
+
+	let view = doc.getElementById('zotrecall-sidebar-view');
+	let unitNodesBefore = view.querySelectorAll('.zr-sb-unit');
+	assert.equal(unitNodesBefore[0].querySelector('.zr-sb-new').textContent, 'Da generare');
+
+	// 1. Run generation -> sidebar updates immediately without closing/reopening
+	let popup = UI.open(reader, 'main');
+	await UI.runGeneration(reader, doc, popup, { pageIndex: 0 });
+	await new Promise(r => setImmediate(r));
+	let unitNodesAfter = view.querySelectorAll('.zr-sb-unit');
+	assert.equal(unitNodesAfter[0].querySelector('.zr-sb-cards').textContent, '1 carta', 'sidebar updated immediately from "Da generare" to "1 carta"');
+
+	// 2. Select period 3 (still "Da generare") and press 'g' (manual card creation shortcut)
+	popup._zrClose();
+	let state = Sidebar._states.get(doc);
+	state.selected = new Set([sentences[2].key]);
+	Sidebar.updateSelection(doc);
+	doc.dispatchEvent(makeEvent('keydown', { key: 'g', target: doc.body }));
+	await new Promise(r => setImmediate(r));
+
+	popup = doc.getElementById('zotrecall-popup');
+	assert.ok(popup, 'G shortcut opened preview window for manual card creation');
+	assert.equal(popup.querySelector('.zr-title').textContent, 'Crea carta manualmente');
+
+	// Back already has period 3's highlighted sentence; Front is already in inline edit mode; Scarta button is omitted
+	let backEl = popup.querySelector('.zr-card-back');
+	let frontEl = popup.querySelector('.zr-card-q');
+	assert.ok(backEl.textContent.includes('Hemorrhagic disorders are characterized by excessive bleeding.'));
+	assert.equal(frontEl.getAttribute('contenteditable'), 'true', 'Front is immediately ready for editing');
+	let footerBtns = popup.querySelectorAll('.zr-footer .zr-btn').map(b => b.textContent);
+	assert.ok(!footerBtns.includes('Scarta'), 'Scarta button is omitted in manual card creation mode');
+
+	// Type the question on Front and commit with Escape -> sidebar immediately shows "1 carta" on period 3
+	frontEl.textContent = 'Che cosa caratterizza i disturbi emorragici?';
+	frontEl.dispatchEvent(makeEvent('keydown', { key: 'Escape', target: frontEl }));
+	await new Promise(r => setImmediate(r));
+	assert.equal(
+		view.querySelectorAll('.zr-sb-unit')[2].querySelector('.zr-sb-cards').textContent,
+		'1 carta',
+		'manual card saved and reflected in sidebar'
+	);
+});
+
 

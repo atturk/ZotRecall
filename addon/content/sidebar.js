@@ -158,20 +158,48 @@ var ZotRecallSidebar = {
 		doc.getElementById('zotrecall-menu')?.remove();
 	},
 
-	/** Re-render when the highlights change (added, removed, recolored). */
+	computeSignature(attachment) {
+		let annSig = this.app.getAnnotations(attachment)
+			.map(a => a.key + ':' + a.color + ':' + a.dateModified)
+			.join('|');
+		let cardSig = '';
+		try {
+			let store = this.app.loadStore(attachment);
+			if (store && Array.isArray(store.cards)) {
+				cardSig = store.cards.map(c => c.id + ':' + c.status + ':' + (c.ankiNoteId || '')).join(',');
+			}
+		}
+		catch (e) {}
+		return annSig + '||' + cardSig;
+	},
+
+	/** Re-render when the highlights or stored cards change. */
 	refreshIfChanged(doc) {
 		let state = this._states.get(doc);
 		if (!state || state.busy) return;
 		try {
 			let attachment = this.app.getAttachment(state.reader);
 			if (!attachment) return;
-			let sig = this.app.getAnnotations(attachment)
-				.map(a => a.key + ':' + a.color + ':' + a.dateModified)
-				.join('|');
+			let sig = this.computeSignature(attachment);
 			if (sig !== state.signature) this.render(doc, sig);
 			else if (state.pageFilter && this.app.getCurrentPageIndex(state.reader) !== state.page) this.render(doc, sig);
 		}
 		catch (e) {}
+	},
+
+	/** Select and scroll into view the period(s) linked to the given card when the sidebar is open. */
+	highlightCardUnit(doc, card) {
+		let state = this._states.get(doc);
+		if (!state || !state.active || !card || !Array.isArray(card.sentenceKeys) || !card.sentenceKeys.length) return;
+		let keySet = new Set(card.sentenceKeys);
+		let matching = state.units.filter(u => u.keys.some(k => keySet.has(k)));
+		if (!matching.length) return;
+		state.selected = new Set(matching.map(u => u.id));
+		state.anchor = matching[0].id;
+		this.updateSelection(doc);
+		let view = doc.getElementById('zotrecall-sidebar-view');
+		let el = view && Array.from(view.querySelectorAll('.zr-sb-unit')).find(node => node.getAttribute('data-unit') === matching[0].id);
+		if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
 	},
 
 	// ------------------------------------------------------------------
@@ -197,8 +225,7 @@ var ZotRecallSidebar = {
 		let unmatched;
 		try {
 			({ sentences, unmatched } = await this.app.extract(attachment));
-			state.signature = signature || this.app.getAnnotations(attachment)
-				.map(a => a.key + ':' + a.color + ':' + a.dateModified).join('|');
+			state.signature = signature || this.computeSignature(attachment);
 		}
 		catch (e) {
 			Zotero.logError(e);
@@ -740,19 +767,24 @@ var ZotRecallSidebar = {
 		if (e.metaKey || e.ctrlKey || e.altKey) return;
 		let units = this.selectedUnits(state);
 		if (!units.length) return;
-		let shortcuts = (this.app.getSettings && this.app.getSettings().shortcuts) || { exclude: 'e', edit: 'm' };
-		let key = String(e.key || '').toLowerCase();
-		if (key && key === (shortcuts.exclude || 'e')) {
+		let shortcuts = Object.assign({}, ZotRecallCore.DEFAULT_SHORTCUTS, (this.app.getSettings && this.app.getSettings().shortcuts) || {});
+		if (ZotRecallCore.matchesShortcut(e.key, shortcuts.exclude)) {
 			e.preventDefault();
 			e.stopPropagation();
 			let allExcluded = units.every(u => u.excluded);
 			this.exclude(doc, units, !allExcluded);
 			return;
 		}
-		if (key && key === (shortcuts.edit || 'm')) {
+		if (ZotRecallCore.matchesShortcut(e.key, shortcuts.edit)) {
 			e.preventDefault();
 			e.stopPropagation();
 			this.startEditUnit(doc, units[0]);
+			return;
+		}
+		if (ZotRecallCore.matchesShortcut(e.key, shortcuts.manualCard)) {
+			e.preventDefault();
+			e.stopPropagation();
+			this.createManualCard(doc, units);
 		}
 	},
 
@@ -808,9 +840,10 @@ var ZotRecallSidebar = {
 		let bar = h(doc, 'div', { class: 'zr-sb-selbar', hidden: !units.length });
 		if (!units.length) return bar;
 		let allExcluded = units.every(u => u.excluded);
-		let shortcuts = (this.app.getSettings && this.app.getSettings().shortcuts) || { exclude: 'e', edit: 'm' };
-		let editKey = String(shortcuts.edit || 'm').toUpperCase();
-		let excludeKey = String(shortcuts.exclude || 'e').toUpperCase();
+		let shortcuts = Object.assign({}, ZotRecallCore.DEFAULT_SHORTCUTS, (this.app.getSettings && this.app.getSettings().shortcuts) || {});
+		let editKey = ZotRecallCore.shortcutDisplayLabel(shortcuts.edit);
+		let excludeKey = ZotRecallCore.shortcutDisplayLabel(shortcuts.exclude);
+		let manualKey = ZotRecallCore.shortcutDisplayLabel(shortcuts.manualCard);
 		bar.append(...[
 			h(doc, 'span', { class: 'zr-sb-selcount', text: `${units.length} selezionati` }),
 			units.length === 1 ? h(doc, 'button', {
@@ -830,6 +863,12 @@ var ZotRecallSidebar = {
 				title: `${allExcluded ? 'Includi' : 'Escludi'} (${excludeKey})`,
 				onclick: () => this.exclude(doc, units, !allExcluded),
 			}, allExcluded ? 'Includi' : 'Escludi'),
+			h(doc, 'button', {
+				class: 'zr-sb-btn',
+				disabled: allExcluded,
+				title: `Crea carta manualmente (${manualKey})`,
+				onclick: () => this.createManualCard(doc, units),
+			}, 'Crea carta'),
 			h(doc, 'button', {
 				class: 'zr-sb-btn zr-sb-primary',
 				disabled: allExcluded,
@@ -917,6 +956,15 @@ var ZotRecallSidebar = {
 		this.ui.openGeneration(state.reader, doc, { keys, label: `${n} ${n === 1 ? 'periodo selezionato' : 'periodi selezionati'}` });
 	},
 
+	createManualCard(doc, units) {
+		let state = this._states.get(doc);
+		if (!state) return;
+		let activeUnits = (units || []).filter(u => u && !u.excluded);
+		if (!activeUnits.length) activeUnits = (units || []).filter(Boolean);
+		if (!activeUnits.length) return;
+		this.ui.open(state.reader, 'preview', { manualUnits: activeUnits });
+	},
+
 	goTo(doc, unit) {
 		let state = this._states.get(doc);
 		let key = unit.sentences[0].spans.map(s => s.key).find(Boolean);
@@ -939,9 +987,10 @@ var ZotRecallSidebar = {
 		let idx = state.units.findIndex(u => u.id === unit.id);
 		let next = !many && state.units[idx + 1];
 		let allExcluded = units.every(u => u.excluded);
-		let shortcuts = (this.app.getSettings && this.app.getSettings().shortcuts) || { exclude: 'e', edit: 'm' };
-		let editKeyHint = shortcuts.edit ? shortcuts.edit.toUpperCase() : '';
-		let excludeKeyHint = shortcuts.exclude ? shortcuts.exclude.toUpperCase() : '';
+		let shortcuts = Object.assign({}, ZotRecallCore.DEFAULT_SHORTCUTS, (this.app.getSettings && this.app.getSettings().shortcuts) || {});
+		let editKeyHint = ZotRecallCore.shortcutDisplayLabel(shortcuts.edit);
+		let excludeKeyHint = ZotRecallCore.shortcutDisplayLabel(shortcuts.exclude);
+		let manualKeyHint = ZotRecallCore.shortcutDisplayLabel(shortcuts.manualCard);
 		let menu = h(doc, 'div', { id: 'zotrecall-menu', class: 'preview-popup', role: 'menu' });
 		menu.addEventListener('pointerdown', e => e.stopPropagation());
 		menu.addEventListener('mousedown', e => e.stopPropagation());
@@ -979,6 +1028,7 @@ var ZotRecallSidebar = {
 			units.some(u => u.merged) ? item('Separa', () => this.split(doc, units)) : null,
 			sep(),
 			item(allExcluded ? 'Includi di nuovo' : 'Escludi dalla generazione', () => this.exclude(doc, units, !allExcluded), false, excludeKeyHint),
+			item('Crea carta manualmente', () => this.createManualCard(doc, units), allExcluded, manualKeyHint),
 			item(many ? 'Genera carte per questi periodi' : 'Genera carte solo per questo', () => this.generateUnits(doc, units), allExcluded),
 			sep(),
 			item('Vai all\'evidenziazione', () => this.goTo(doc, unit), many),
