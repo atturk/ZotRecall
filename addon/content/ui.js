@@ -721,48 +721,16 @@ var ZotRecallUI = {
 		let store = this.app.loadStore(attachment);
 		let cfg = this.app.getAnkiConfig();
 		let tags = ZotRecallCore.parseTags(cfg.tags);
-		let fromSent = Boolean(start && typeof start === 'object' && start.fromSent);
-		let unitCardIDs = (start && typeof start === 'object' && Array.isArray(start.cardIDs) && start.cardIDs.length)
-			? start.cardIDs
-			: null;
-		let unitSentenceKeys = (start && typeof start === 'object' && Array.isArray(start.sentenceKeys) && start.sentenceKeys.length)
-			? start.sentenceKeys
-			: null;
 		let allActive = ZotRecallCore.activeCards(store);
-		let initialCards;
-		if (unitCardIDs) {
-			let idSet = new Set(unitCardIDs);
-			initialCards = allActive.filter(c => idSet.has(c.id));
-		}
-		else if (unitSentenceKeys) {
-			let keySet = new Set(unitSentenceKeys);
-			initialCards = allActive.filter(c => Array.isArray(c.sentenceKeys) && c.sentenceKeys.some(k => keySet.has(k)));
-		}
-		else if (fromSent) {
-			initialCards = ZotRecallCore.sentCards(store);
-			if (start && typeof start === 'object' && start.cardID && !initialCards.some(c => c.id === start.cardID)) {
-				let target = allActive.find(c => c.id === start.cardID);
-				if (target) initialCards = [target, ...initialCards];
-			}
-		}
-		else if (start && typeof start === 'object' && start.cardID) {
-			let target = allActive.find(c => c.id === start.cardID);
-			if (target && Array.isArray(target.sentenceKeys) && target.sentenceKeys.length) {
-				let targetKeySet = new Set(target.sentenceKeys);
-				initialCards = allActive.filter(c => Array.isArray(c.sentenceKeys) && c.sentenceKeys.some(k => targetKeySet.has(k)));
-			}
-			else {
-				initialCards = target ? [target] : [];
-			}
-		}
-		else {
-			initialCards = ZotRecallCore.unsentCards(store, tags);
-		}
+		let {
+			cards: initialCards,
+			index,
+			fromSent,
+			unitCardIDs,
+			unitSentenceKeys,
+		} = ZotRecallCore.selectPreviewCards(store, tags, start);
 		let sessionIDs = new Set(initialCards.map(c => c.id));
 		let cards = initialCards;
-		let index = typeof start === 'object' && start
-			? Math.max(0, cards.findIndex(c => c.id === start.cardID))
-			: Math.max(0, Math.min(start || 0, cards.length - 1));
 		let flipped = false;
 		let editing = false;
 		let sending = false;

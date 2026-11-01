@@ -1126,6 +1126,71 @@ var ZotRecallCore = (function () {
 		return activeCards(store).filter(c => ankiState(store, c, tags) !== 'sent');
 	}
 
+	/** Active cards associated with a review unit (or an array of sentence keys). */
+	function unitCards(store, unitOrKeys) {
+		let keys = Array.isArray(unitOrKeys) ? unitOrKeys : (unitOrKeys && Array.isArray(unitOrKeys.keys) ? unitOrKeys.keys : []);
+		if (!keys.length) return [];
+		let keySet = new Set(keys);
+		return activeCards(store).filter(c => Array.isArray(c.sentenceKeys) && c.sentenceKeys.some(k => keySet.has(k)));
+	}
+
+	/**
+	 * Select the subset of cards and starting index for the preview window:
+	 * - When opened from a sidebar period badge ({cardIDs, sentenceKeys, cardID}),
+	 *   returns strictly the active cards of that period (even if already sent to Anki),
+	 *   never mixing in unsent cards from other periods.
+	 * - When opened from "Carte inviate ad Anki" ({fromSent: true, cardID}),
+	 *   returns all sent cards starting at cardID.
+	 * - When opened normally (start = number or undefined), returns only unsent cards.
+	 */
+	function selectPreviewCards(store, tags = [], start = 0) {
+		let fromSent = Boolean(start && typeof start === 'object' && start.fromSent);
+		let unitCardIDs = (start && typeof start === 'object' && Array.isArray(start.cardIDs) && start.cardIDs.length)
+			? start.cardIDs
+			: null;
+		let unitSentenceKeys = (start && typeof start === 'object' && Array.isArray(start.sentenceKeys) && start.sentenceKeys.length)
+			? start.sentenceKeys
+			: null;
+		let allActive = activeCards(store);
+		let initialCards;
+		if (unitCardIDs) {
+			let idSet = new Set(unitCardIDs);
+			initialCards = allActive.filter(c => idSet.has(c.id));
+		}
+		else if (unitSentenceKeys) {
+			initialCards = unitCards(store, unitSentenceKeys);
+		}
+		else if (fromSent) {
+			initialCards = sentCards(store);
+			if (start && typeof start === 'object' && start.cardID && !initialCards.some(c => c.id === start.cardID)) {
+				let target = allActive.find(c => c.id === start.cardID);
+				if (target) initialCards = [target, ...initialCards];
+			}
+		}
+		else if (start && typeof start === 'object' && start.cardID) {
+			let target = allActive.find(c => c.id === start.cardID);
+			if (target && Array.isArray(target.sentenceKeys) && target.sentenceKeys.length) {
+				initialCards = unitCards(store, target.sentenceKeys);
+			}
+			else {
+				initialCards = target ? [target] : [];
+			}
+		}
+		else {
+			initialCards = unsentCards(store, tags);
+		}
+		let index = typeof start === 'object' && start
+			? Math.max(0, initialCards.findIndex(c => c.id === start.cardID))
+			: Math.max(0, Math.min(Number(start) || 0, Math.max(0, initialCards.length - 1)));
+		return {
+			cards: initialCards,
+			index,
+			fromSent,
+			unitCardIDs,
+			unitSentenceKeys,
+		};
+	}
+
 	function deleteCard(store, cardID) {
 		store.cards = store.cards.filter(c => c.id !== cardID);
 		pruneSentences(store);
@@ -1453,6 +1518,8 @@ Return only JSON: {"groups":[{"sentence_ids":["..."],"questions":["..."]}],"skip
 		markSent,
 		sentCards,
 		unsentCards,
+		unitCards,
+		selectPreviewCards,
 		deleteCard,
 		emptyTrash,
 		orphanKeys,

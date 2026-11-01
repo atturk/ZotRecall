@@ -237,8 +237,7 @@ var ZotRecallSidebar = {
 		for (let u of units) counts[this.unitStatus(u, sets).kind]++;
 		for (let u of shown) {
 			let status = this.unitStatus(u, sets);
-			let unitKeySet = new Set(u.keys);
-			let unitCards = active.filter(c => c.sentenceKeys.some(k => unitKeySet.has(k)));
+			let unitCards = ZotRecallCore.unitCards(store, u);
 			let n = unitCards.length;
 			let firstUnsent = unitCards.find(c => unsentIDs.has(c.id));
 			let cardID = (firstUnsent || unitCards[0])?.id || null;

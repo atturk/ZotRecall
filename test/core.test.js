@@ -411,3 +411,93 @@ test('review: manual unit editing persists in sidebar, goes to LLM, and marks ca
 	assert.equal(restored.renderSentences[0].text, sentences[0].text);
 });
 
+test('preview subset selection: period badge isolates strictly that period cards (1, 2, or 3 cards, sent or unsent)', () => {
+	let doc = makeDoc();
+	let a1 = ann('A1', P1A, 'disc-shaped', 0, 50, 600);
+	let a2 = ann('A2', P1A, 'α-Granules', 0, 50, 600);
+	let a3 = ann('A3', P1B, 'Dense (or δ) granules', 1, 50, 700);
+	let store = Core.emptyStore('X');
+	let { sentences } = Core.extractFromDocument(doc, [a1, a2, a3]);
+	let [s1, s2, s3] = sentences.map(s => s.key);
+	let tags = ['robbins::cap-4'];
+
+	let [group] = Core.planGeneration(sentences, store);
+	let { idMap } = Core.buildMessages(group);
+	// Period 1 -> 1 card; Period 2 -> 3 cards; Period 3 -> 2 cards
+	let reply = JSON.stringify({
+		groups: [
+			{ sentence_ids: ['s1'], questions: ['Q1-only?'] },
+			{ sentence_ids: ['s2'], questions: ['Q2-a?', 'Q2-b?', 'Q2-c?'] },
+			{ sentence_ids: ['s3'], questions: ['Q3-a?', 'Q3-b?'] },
+		],
+		skipped: [],
+	});
+	Core.applyResults(store, group, Core.parseResponse(reply, idMap).results);
+	let units = Core.buildUnits(sentences, store);
+	let [u1, u2, u3] = units;
+
+	assert.equal(Core.unitCards(store, u1).length, 1);
+	assert.equal(Core.unitCards(store, u2).length, 3);
+	assert.equal(Core.unitCards(store, u3).length, 2);
+
+	// Mark all 3 cards of period 2 and the 1 card of period 1 as sent to Anki;
+	// keep the 2 cards of period 3 unsent.
+	for (let c of Core.unitCards(store, u1)) Core.markSent(store, c, { noteId: 10, deck: 'Med', tags });
+	for (let c of Core.unitCards(store, u2)) Core.markSent(store, c, { noteId: 20, deck: 'Med', tags });
+
+	// 1. General preview (no period filter) shows only the 2 unsent cards of period 3
+	let general = Core.selectPreviewCards(store, tags, 0);
+	assert.deepEqual(general.cards.map(c => c.question), ['Q3-a?', 'Q3-b?']);
+	assert.equal(general.index, 0);
+
+	// 2. Clicking "1 carta" on period 1 (already sent) must show ONLY that 1 card (1 di 1),
+	//    NEVER mixing in the 2 unsent cards from period 3!
+	let u1Cards = Core.unitCards(store, u1);
+	let selU1 = Core.selectPreviewCards(store, tags, {
+		cardIDs: u1Cards.map(c => c.id),
+		sentenceKeys: u1.keys,
+		cardID: u1Cards[0].id,
+	});
+	assert.deepEqual(selU1.cards.map(c => c.question), ['Q1-only?']);
+	assert.equal(selU1.index, 0);
+
+	// 3. Clicking "3 carte" on period 2 (all 3 already sent) must show ALL 3 cards of period 2 (1 di 3 .. 3 di 3),
+	//    neither collapsing to 1 di 1 nor mixing in period 3's unsent cards!
+	let u2Cards = Core.unitCards(store, u2);
+	let selU2 = Core.selectPreviewCards(store, tags, {
+		cardIDs: u2Cards.map(c => c.id),
+		sentenceKeys: u2.keys,
+		cardID: u2Cards[0].id,
+	});
+	assert.deepEqual(selU2.cards.map(c => c.question), ['Q2-a?', 'Q2-b?', 'Q2-c?']);
+	assert.equal(selU2.index, 0);
+
+	// Also works when only sentenceKeys + cardID are passed
+	let selU2ByKeys = Core.selectPreviewCards(store, tags, {
+		sentenceKeys: u2.keys,
+		cardID: u2Cards[1].id,
+	});
+	assert.deepEqual(selU2ByKeys.cards.map(c => c.question), ['Q2-a?', 'Q2-b?', 'Q2-c?']);
+	assert.equal(selU2ByKeys.index, 1);
+
+	// 4. When a period has 1 sent card and 2 unsent cards, clicking its badge shows all 3 and starts on the first unsent
+	let u2SecondCard = u2Cards[1];
+	Core.editCard(store, u2SecondCard.id, 'Q2-b edited?', null); // now 'changed' (unsent)
+	let unsentSet = new Set(Core.unsentCards(store, tags).map(c => c.id));
+	let firstUnsent = u2Cards.find(c => unsentSet.has(c.id));
+	assert.equal(firstUnsent.id, u2SecondCard.id);
+	let selMixed = Core.selectPreviewCards(store, tags, {
+		cardIDs: u2Cards.map(c => c.id),
+		sentenceKeys: u2.keys,
+		cardID: firstUnsent.id,
+	});
+	assert.equal(selMixed.cards.length, 3);
+	assert.equal(selMixed.index, 1, 'starts at first unsent card of the period');
+
+	// 5. Opening from "Carte inviate ad Anki" (fromSent: true) shows all sent cards
+	let fromSent = Core.selectPreviewCards(store, tags, { fromSent: true, cardID: u2Cards[2].id });
+	assert.equal(fromSent.cards.length, 4);
+	assert.equal(fromSent.cards[fromSent.index].id, u2Cards[2].id);
+});
+
+
