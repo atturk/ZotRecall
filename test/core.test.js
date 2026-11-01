@@ -330,3 +330,84 @@ test('anki state: new, sent, changed after edit; tags parsing; edited back', () 
 	assert.equal(Core.ankiState(store, card, tags), 'sent');
 	assert.equal(Core.unsentCards(store, tags).length, 0);
 });
+
+test('review: merge preserves selection order even when reverse of document order', () => {
+	let doc = makeDoc();
+	let a1 = ann('A1', P1A, 'disc-shaped', 0, 50, 600);
+	let a3 = ann('A3', P1B, 'Dense (or δ) granules', 1, 50, 700);
+	let store = Core.emptyStore('X');
+	let { sentences } = Core.extractFromDocument(doc, [a1, a3]);
+	let [sPage1, sPage2] = sentences.map(s => s.key);
+
+	// Select page 2 first, then page 1
+	assert.ok(Core.mergeKeys(store, [sPage2, sPage1]));
+	let units = Core.buildUnits(sentences, store);
+	assert.equal(units.length, 1);
+	assert.deepEqual(units[0].keys, [sPage2, sPage1]);
+	assert.equal(units[0].sentences[0].key, sPage2);
+	assert.equal(units[0].sentences[1].key, sPage1);
+
+	let [group] = Core.planGeneration(sentences, store);
+	let { messages, idMap } = Core.buildMessages(group);
+	assert.deepEqual(idMap.s1, [sPage2, sPage1]);
+	assert.ok(
+		messages[1].content.includes('<s id="s1" merged="true"><hl c="yellow">Dense (or δ) granules</hl> contain adenosine diphosphate (ADP), see Fig. 4.5 for details. Platelets are <hl c="yellow">disc-shaped</hl> anucleate cell fragments.</s>'),
+		'merged prompt follows selection order'
+	);
+
+	let { results } = Core.parseResponse('{"groups":[{"sentence_ids":["s1"],"questions":["Q?"]}],"skipped":[]}', idMap);
+	Core.applyResults(store, group, results);
+	let card = Core.activeCards(store)[0];
+	assert.deepEqual(card.sentenceKeys, [sPage2, sPage1]);
+	assert.ok(Core.backHTML(store, card).indexOf('Dense') < Core.backHTML(store, card).indexOf('disc-shaped'));
+	assert.equal(Core.planGeneration(sentences, store).length, 0);
+
+	// Re-merging in the opposite order marks existing cards as changed
+	assert.ok(Core.mergeKeys(store, [sPage1, sPage2]));
+	assert.equal(Core.classify(sentences, store).changed.length, 2);
+});
+
+test('review: manual unit editing persists in sidebar, goes to LLM, and marks cards changed', () => {
+	let doc = makeDoc();
+	let a3 = ann('A3', P1B, 'Dense (or δ) granules', 1, 50, 700);
+	let store = Core.emptyStore('X');
+	let { sentences } = Core.extractFromDocument(doc, [a3]);
+	let sKey = sentences[0].key;
+
+	assert.ok(Core.setUnitEdit(store, [sKey], {
+		text: 'Dense granules store ADP and serotonin.',
+		spans: [
+			{ start: 0, end: 14, color: '#ffd400' },
+			{ start: 21, end: 38, color: '#5fb236' },
+		],
+	}));
+
+	let [unit] = Core.buildUnits(sentences, store);
+	assert.equal(unit.edited, true);
+	assert.equal(unit.renderSentences.length, 1);
+	assert.equal(unit.renderSentences[0].text, 'Dense granules store ADP and serotonin.');
+
+	let [group] = Core.planGeneration(sentences, store);
+	let { messages, idMap } = Core.buildMessages(group);
+	assert.ok(messages[1].content.includes('<s id="s1"><hl c="yellow">Dense granules</hl> store <hl c="green">ADP and serotonin</hl>.</s>'));
+
+	let { results } = Core.parseResponse('{"groups":[{"sentence_ids":["s1"],"questions":["What do dense granules store?"]}],"skipped":[]}', idMap);
+	Core.applyResults(store, group, results);
+	let card = Core.activeCards(store)[0];
+	assert.ok(Core.backHTML(store, card).includes('ADP and serotonin'));
+	assert.equal(Core.planGeneration(sentences, store).length, 0);
+
+	// Editing the unit text again marks the sentence as changed
+	Core.setUnitEdit(store, [sKey], {
+		text: 'Dense granules store ADP, ATP, and serotonin.',
+		spans: [{ start: 0, end: 14, color: '#ffd400' }],
+	});
+	assert.equal(Core.classify(sentences, store).changed.length, 1);
+
+	// Restoring original unit removes the edit
+	Core.clearUnitEdit(store, [sKey]);
+	let [restored] = Core.buildUnits(sentences, store);
+	assert.equal(restored.edited, false);
+	assert.equal(restored.renderSentences[0].text, sentences[0].text);
+});
+

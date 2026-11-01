@@ -49,6 +49,15 @@ var ZotRecallCore = (function () {
 		return null;
 	}
 
+	function rgbToHex([r, g, b]) {
+		return '#' + [r, g, b].map(x => Math.max(0, Math.min(255, x | 0)).toString(16).padStart(2, '0')).join('');
+	}
+
+	function normalizeColorHex(color) {
+		let rgb = hexToRGB(color);
+		return rgb ? rgbToHex(rgb) : String(color || '').trim();
+	}
+
 	function srgbToLinear(channel) {
 		let v = channel / 255;
 		return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
@@ -667,38 +676,91 @@ var ZotRecallCore = (function () {
 		if (!Array.isArray(store.review.merges)) store.review.merges = [];
 		if (!Array.isArray(store.review.excluded)) store.review.excluded = [];
 		if (!store.review.extend || typeof store.review.extend !== 'object') store.review.extend = {};
+		if (!store.review.edits || typeof store.review.edits !== 'object') store.review.edits = {};
 		return store.review;
 	}
 
+	function normalizeEditedUnit(rawText, rawSpans, defaultColor = '#ffd400') {
+		let { text, spans } = normalizeWithSpans(String(rawText || ''), Array.isArray(rawSpans) ? rawSpans : []);
+		let sorted = spans
+			.map(s => ({ start: s.start, end: s.end, color: normalizeColorHex(s.color || defaultColor) }))
+			.filter(s => s.end > s.start)
+			.sort((a, b) => a.start - b.start || a.end - b.end);
+		let merged = [];
+		for (let s of sorted) {
+			let last = merged[merged.length - 1];
+			if (last && s.start <= last.end && last.color === s.color) {
+				last.end = Math.max(last.end, s.end);
+			}
+			else if (last && s.start < last.end) {
+				if (s.end > last.end) {
+					merged.push({ start: last.end, end: s.end, color: s.color });
+				}
+			}
+			else {
+				merged.push({ ...s });
+			}
+		}
+		if (text && !merged.length) {
+			merged.push({ start: 0, end: text.length, color: normalizeColorHex(defaultColor) });
+		}
+		return { text, spans: merged };
+	}
+
 	/**
-	 * Group the current sentences into review units, in document order.
-	 * A unit is a single sentence or a user-made merge of several.
-	 * @returns {Array<{id, keys, sentences, excluded, merged}>}
+	 * Save a manual edit ({text, spans, defaultColor}) for a unit identified
+	 * by `keys`. Passing null or empty text removes the manual edit.
+	 */
+	function setUnitEdit(store, keys, edit) {
+		let review = ensureReview(store);
+		let list = Array.isArray(keys) ? keys.filter(Boolean) : [keys].filter(Boolean);
+		if (!list.length) return false;
+		for (let k of list) delete review.edits[k];
+		if (!edit || !String(edit.text || '').trim()) return true;
+		let norm = normalizeEditedUnit(edit.text, edit.spans, edit.defaultColor || '#ffd400');
+		if (!norm.text) return false;
+		review.edits[list[0]] = {
+			text: norm.text,
+			spans: norm.spans,
+			keys: list.slice(),
+		};
+		return true;
+	}
+
+	function clearUnitEdit(store, keys) {
+		return setUnitEdit(store, keys, null);
+	}
+
+	/**
+	 * Group the current sentences into review units.
+	 * A unit is a single sentence or a user-made merge of several (in the
+	 * exact order the user selected them when merging).
+	 * @returns {Array<{id, keys, sentences, renderSentences, edited, excluded, merged, before, after}>}
 	 */
 	function buildUnits(sentences, store) {
 		let review = ensureReview(store);
-		let present = new Set(sentences.map(s => s.key));
+		let byKey = new Map(sentences.map(s => [s.key, s]));
 		let mergeOf = new Map();
 		for (let m of review.merges) {
-			let keys = m.filter(k => present.has(k));
+			let keys = m.filter(k => byKey.has(k));
 			if (keys.length < 2) continue;
-			for (let k of keys) mergeOf.set(k, m);
+			for (let k of keys) mergeOf.set(k, keys);
 		}
 		let excluded = new Set(review.excluded);
 		let units = [];
-		let byMerge = new Map();
+		let emittedMerges = new Set();
 		for (let s of sentences) {
 			let m = mergeOf.get(s.key);
 			if (m) {
-				let unit = byMerge.get(m);
-				if (unit) {
-					unit.keys.push(s.key);
-					unit.sentences.push(s);
-					continue;
-				}
-				unit = { id: 'm:' + s.key, keys: [s.key], sentences: [s], merged: true };
-				byMerge.set(m, unit);
-				units.push(unit);
+				if (emittedMerges.has(m)) continue;
+				if (s.key !== m[0]) continue;
+				emittedMerges.add(m);
+				units.push({
+					id: 'm:' + m[0],
+					keys: m.slice(),
+					sentences: m.map(k => byKey.get(k)),
+					merged: true,
+				});
 			}
 			else {
 				units.push({ id: s.key, keys: [s.key], sentences: [s], merged: false });
@@ -712,6 +774,38 @@ var ZotRecallCore = (function () {
 			let na = Math.min((review.extend[last.key] || {}).after || 0, (last.after || []).length);
 			u.before = nb ? first.before.slice(-nb) : [];
 			u.after = na ? last.after.slice(0, na) : [];
+
+			let renderSentences = [];
+			let covered = new Set();
+			let edited = false;
+			for (let s of u.sentences) {
+				if (covered.has(s.key)) continue;
+				let ed = review.edits[s.key];
+				if (ed && typeof ed.text === 'string' && Array.isArray(ed.spans)) {
+					edited = true;
+					if (Array.isArray(ed.keys)) ed.keys.forEach(k => covered.add(k));
+					covered.add(s.key);
+					renderSentences.push({
+						key: s.key,
+						text: ed.text,
+						spans: ed.spans.map(sp => ({ start: sp.start, end: sp.end, color: sp.color })),
+						pageIndex: s.pageIndex,
+						section: s.section,
+					});
+				}
+				else {
+					covered.add(s.key);
+					renderSentences.push({
+						key: s.key,
+						text: s.text,
+						spans: s.spans,
+						pageIndex: s.pageIndex,
+						section: s.section,
+					});
+				}
+			}
+			u.edited = edited;
+			u.renderSentences = renderSentences;
 		}
 		return units;
 	}
@@ -744,17 +838,31 @@ var ZotRecallCore = (function () {
 		for (let k of keys) delete review.extend[k];
 	}
 
-	/** Merge the given sentence keys (and any merge they already belong to) into one unit. */
+	/**
+	 * Merge the given sentence keys (and any merge they already belong to) into
+	 * one unit, preserving the exact selection order of `keys`.
+	 */
 	function mergeKeys(store, keys) {
 		let review = ensureReview(store);
-		let all = new Set(keys);
-		let rest = [];
-		for (let m of review.merges) {
-			if (m.some(k => all.has(k))) m.forEach(k => all.add(k));
-			else rest.push(m);
+		let inputSet = new Set(keys);
+		let matchingMerges = review.merges.filter(m => m.some(k => inputSet.has(k)));
+		let rest = review.merges.filter(m => !m.some(k => inputSet.has(k)));
+		let ordered = [];
+		let seen = new Set();
+		let add = (k) => {
+			if (k && !seen.has(k)) {
+				seen.add(k);
+				ordered.push(k);
+			}
+		};
+		for (let k of keys) {
+			add(k);
+			for (let m of matchingMerges) {
+				if (m.includes(k)) m.forEach(add);
+			}
 		}
-		if (all.size < 2) return false;
-		rest.push(Array.from(all));
+		if (ordered.length < 2) return false;
+		rest.push(ordered);
 		review.merges = rest;
 		return true;
 	}
@@ -765,6 +873,11 @@ var ZotRecallCore = (function () {
 		let set = new Set(keys);
 		let before = review.merges.length;
 		review.merges = review.merges.filter(m => !m.some(k => set.has(k)));
+		for (let [k, ed] of Object.entries(review.edits)) {
+			if (Array.isArray(ed.keys) && ed.keys.length > 1 && ed.keys.some(x => set.has(x))) {
+				delete review.edits[k];
+			}
+		}
 		return review.merges.length !== before;
 	}
 
@@ -792,21 +905,34 @@ var ZotRecallCore = (function () {
 	function classify(sentences, store) {
 		let out = { fresh: [], unchanged: [], changed: [], discarded: [] };
 		let current = new Map(sentences.map(s => [s.key, s.fingerprint]));
-		// A card is changed when the highlighting of any of its sentences changed,
-		// so all sentences of a merged card are regenerated together
-		let cardChanged = c => c.sentenceKeys.some(k => current.has(k)
-			&& (!c.fingerprints || c.fingerprints[k] !== current.get(k)));
-		// A sentence the user merged after its cards were made counts as changed
-		// Same for context sentences added or removed after generation
+		// A sentence the user merged, re-ordered, or manually edited after its
+		// cards were made counts as changed; same for context sentences added/removed
 		let unitOf = new Map();
 		let ctxOf = new Map();
 		for (let u of buildUnits(sentences, store)) {
 			if (u.merged) u.keys.forEach(k => unitOf.set(k, u.keys));
 			let ctx = unitContext(u);
 			u.keys.forEach(k => ctxOf.set(k, JSON.stringify(ctx[k] || [0, 0])));
+			if (u.edited) {
+				let editSig = hash(JSON.stringify(u.renderSentences.map(r => [r.text, r.spans])));
+				for (let s of u.sentences) {
+					current.set(s.key, hash(s.fingerprint + '|edit:' + editSig));
+				}
+			}
 		}
+		let cardChanged = c => c.sentenceKeys.some(k => current.has(k)
+			&& (!c.fingerprints || c.fingerprints[k] !== current.get(k)));
+		let hasSubsequenceInOrder = (arr, sub) => {
+			let pos = -1;
+			for (let k of sub) {
+				let next = arr.indexOf(k, pos + 1);
+				if (next === -1) return false;
+				pos = next;
+			}
+			return true;
+		};
 		let mergeChanged = (c, key) => (unitOf.has(key)
-			&& !unitOf.get(key).every(k => c.sentenceKeys.includes(k)))
+			&& !hasSubsequenceInOrder(c.sentenceKeys, unitOf.get(key)))
 			|| JSON.stringify((c.context || {})[key] || [0, 0]) !== ctxOf.get(key);
 		for (let s of sentences) {
 			let cards = store.cards.filter(c => c.sentenceKeys.includes(s.key));
@@ -869,17 +995,32 @@ var ZotRecallCore = (function () {
 		let context = {};
 		for (let u of group.units || []) Object.assign(context, unitContext(u));
 		let unitOfKey = new Map();
-		for (let u of group.units || []) u.keys.forEach(k => unitOfKey.set(k, u));
+		let renderOfKey = new Map();
+		let fpOfKey = new Map();
+		for (let s of group.sentences) fpOfKey.set(s.key, s.fingerprint);
+		for (let u of group.units || []) {
+			let editSig = u.edited ? hash(JSON.stringify((u.renderSentences || []).map(r => [r.text, r.spans]))) : '';
+			let rMap = new Map((u.renderSentences || u.sentences).map(r => [r.key, r]));
+			for (let s of u.sentences) {
+				unitOfKey.set(s.key, u);
+				renderOfKey.set(s.key, rMap.get(s.key) || { text: '', spans: [] });
+				if (editSig) fpOfKey.set(s.key, hash(s.fingerprint + '|edit:' + editSig));
+			}
+		}
 		for (let s of group.sentences) {
 			let u = unitOfKey.get(s.key);
+			let rs = renderOfKey.get(s.key) || s;
+			let lastRenderKey = (u && u.renderSentences && u.renderSentences.length)
+				? u.renderSentences[u.renderSentences.length - 1].key
+				: (u ? u.keys[u.keys.length - 1] : null);
 			let entry = {
-				text: s.text,
-				spans: s.spans.map(({ start, end, color }) => ({ start, end, color })),
+				text: rs.text,
+				spans: (rs.spans || []).map(({ start, end, color }) => ({ start, end, color })),
 				pageIndex: s.pageIndex,
 				section: s.section,
 			};
 			if (u && u.keys[0] === s.key && u.before.length) entry.before = u.before.slice();
-			if (u && u.keys[u.keys.length - 1] === s.key && u.after.length) entry.after = u.after.slice();
+			if (u && lastRenderKey === s.key && u.after.length) entry.after = u.after.slice();
 			store.sentences[s.key] = entry;
 		}
 		let added = [];
@@ -889,7 +1030,7 @@ var ZotRecallCore = (function () {
 			if (!sentenceKeys.length) continue;
 			let fingerprints = {};
 			for (let k of sentenceKeys) {
-				fingerprints[k] = group.sentences.find(s => s.key === k).fingerprint;
+				fingerprints[k] = fpOfKey.get(k) || group.sentences.find(s => s.key === k).fingerprint;
 			}
 			for (let q of r.questions) {
 				let cardContext = {};
@@ -1041,8 +1182,8 @@ var ZotRecallCore = (function () {
 		if (card.back) return ensureHighlightContrast(card.back);
 		return card.sentenceKeys
 			.map(k => store.sentences[k])
-			.filter(Boolean)
-			.map(s => [...(s.before || []).map(escapeHTML), sentenceToHTML(s), ...(s.after || []).map(escapeHTML)].join(' '))
+			.filter(s => s && (s.text || (s.before && s.before.length) || (s.after && s.after.length)))
+			.map(s => [...(s.before || []).map(escapeHTML), s.text ? sentenceToHTML(s) : '', ...(s.after || []).map(escapeHTML)].filter(Boolean).join(' '))
 			.join('<br><br>');
 	}
 
@@ -1097,9 +1238,10 @@ Return only JSON: {"groups":[{"sentence_ids":["..."],"questions":["..."]}],"skip
 
 	/** A merged unit becomes one <s> holding all its sentences. */
 	function unitToMarkup(unit, id) {
+		let list = unit.renderSentences || unit.sentences;
 		let inner = [
 			...(unit.before || []).map(escapeXMLText),
-			...unit.sentences.map(s => sentenceToMarkup(s, null)),
+			...list.map(s => sentenceToMarkup(s, null)),
 			...(unit.after || []).map(escapeXMLText),
 		].join(' ');
 		return unit.sentences.length > 1
@@ -1276,6 +1418,7 @@ Return only JSON: {"groups":[{"sentence_ids":["..."],"questions":["..."]}],"skip
 	return {
 		ZOTERO_COLORS,
 		colorName,
+		normalizeColorHex,
 		highlightTextColor,
 		highlightStyle,
 		ensureHighlightContrast,
@@ -1289,6 +1432,9 @@ Return only JSON: {"groups":[{"sentence_ids":["..."],"questions":["..."]}],"skip
 		emptyStore,
 		classify,
 		ensureReview,
+		normalizeEditedUnit,
+		setUnitEdit,
+		clearUnitEdit,
 		buildUnits,
 		mergeKeys,
 		splitKeys,

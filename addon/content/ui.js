@@ -1682,6 +1682,26 @@ var ZotRecallUI = {
 		let outside = h(doc, 'input', { type: 'checkbox' });
 		outside.checked = !!s.closeOnOutsideClick;
 
+		let makeShortcutInput = (val, def) => {
+			let inp = h(doc, 'input', {
+				type: 'text',
+				value: String(val || def).toUpperCase(),
+				maxlength: '1',
+				style: { width: '56px', textAlign: 'center', fontWeight: '600', textTransform: 'uppercase' },
+			});
+			inp.addEventListener('keydown', (e) => {
+				if (e.metaKey || e.ctrlKey || e.altKey) return;
+				if (e.key && e.key.length === 1 && !/\s/.test(e.key)) {
+					e.preventDefault();
+					e.stopPropagation();
+					inp.value = e.key.toUpperCase();
+				}
+			});
+			return inp;
+		};
+		let scExcludeInput = makeShortcutInput(s.shortcuts && s.shortcuts.exclude, 'E');
+		let scEditInput = makeShortcutInput(s.shortcuts && s.shortcuts.edit, 'M');
+
 		let collect = () => ({
 			model: modelInput.value,
 			language: langInput.value,
@@ -1692,6 +1712,10 @@ var ZotRecallUI = {
 			ankiURL: ankiURL.value,
 			ankiKey: ankiKey.value,
 			closeOnOutsideClick: outside.checked,
+			shortcuts: {
+				exclude: (scExcludeInput.value || 'e').trim().toLowerCase(),
+				edit: (scEditInput.value || 'm').trim().toLowerCase(),
+			},
 		});
 
 		ankiTest.addEventListener('click', async (e) => {
@@ -1753,6 +1777,11 @@ var ZotRecallUI = {
 				e.preventDefault();
 				this.showAnkiConfig(reader, doc, popup, () => this.showSettings(reader, doc, popup));
 			} }),
+			h(doc, 'div', { class: 'zr-section', text: 'Scorciatoie da tastiera (barra laterale)' }),
+			h(doc, 'p', { class: 'zr-note', style: { marginTop: '0', marginBottom: '8px' }, text: 'Usa le frecce ↑ e ↓ per scorrere i periodi nella barra laterale.' }),
+			h(doc, 'div', { class: 'zr-row', style: { alignItems: 'flex-start' } },
+				h(doc, 'div', { style: { flex: '1' } }, field('Escludi / includi periodo', scExcludeInput)),
+				h(doc, 'div', { style: { flex: '1' } }, field('Modifica periodo', scEditInput))),
 			h(doc, 'div', { class: 'zr-section', text: 'Finestra' }),
 			h(doc, 'label', { class: 'zr-color-row' }, outside, 'Chiudi la finestra cliccando fuori'),
 			h(doc, 'div', { class: 'zr-footer' }, save),

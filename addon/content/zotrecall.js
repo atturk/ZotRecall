@@ -147,6 +147,12 @@ var ZotRecall = {
 	},
 
 	getSettings() {
+		let rawShortcuts = this.getJSONPref('shortcuts', {});
+		let normKey = (v, def) => {
+			if (typeof v !== 'string') return def;
+			let k = v.trim().toLowerCase();
+			return k.length ? k.slice(0, 1) : def;
+		};
 		return {
 			model: this.getPref('model') || 'openai/gpt-6-luna',
 			language: this.getPref('language') || 'Italiano',
@@ -157,6 +163,10 @@ var ZotRecall = {
 			ankiURL: this.getPref('ankiURL') || 'http://127.0.0.1:8765',
 			ankiKey: this.getPref('ankiKey') || '',
 			closeOnOutsideClick: !!this.getPref('closeOnOutsideClick'),
+			shortcuts: {
+				exclude: normKey(rawShortcuts.exclude, 'e'),
+				edit: normKey(rawShortcuts.edit, 'm'),
+			},
 		};
 	},
 
@@ -171,6 +181,17 @@ var ZotRecall = {
 		this.setPref('ankiURL', String(s.ankiURL || '').trim());
 		this.setPref('ankiKey', String(s.ankiKey || '').trim());
 		if (s.closeOnOutsideClick !== undefined) this.setPref('closeOnOutsideClick', !!s.closeOnOutsideClick);
+		if (s.shortcuts && typeof s.shortcuts === 'object') {
+			let normKey = (v, def) => {
+				if (typeof v !== 'string') return def;
+				let k = v.trim().toLowerCase();
+				return k.length ? k.slice(0, 1) : def;
+			};
+			this.setPref('shortcuts', JSON.stringify({
+				exclude: normKey(s.shortcuts.exclude, 'e'),
+				edit: normKey(s.shortcuts.edit, 'm'),
+			}));
+		}
 	},
 
 	async getAPIKey() {
