@@ -481,7 +481,7 @@ var ZotRecallUI = {
 		popup._zrRefresh = null;
 		popup._zrKeys = null;
 		popup._zrOnResize = null;
-		popup.replaceChildren(...nodes);
+		popup.replaceChildren(...nodes.filter(Boolean));
 	},
 
 	showMain(reader, doc, popup) {
@@ -1191,7 +1191,7 @@ var ZotRecallUI = {
 			if (!manualMode) hintParts.push(`${discardKeyLabel} scarta`);
 			hintParts.push(`${newKeyLabel} nuova`);
 			hintParts.push('← → scorri');
-			body.replaceChildren(
+			body.replaceChildren(...[
 				h(doc, 'div', { class: 'zr-meta-row' },
 					h(doc, 'span', {}, `${index + 1} di ${cards.length} `, ...badges),
 					metaLinks),
@@ -1199,7 +1199,8 @@ var ZotRecallUI = {
 				toolbarNode,
 				actions,
 				message,
-				h(doc, 'p', { class: 'zr-note zr-center', text: hintParts.join(' · ') }));
+				h(doc, 'p', { class: 'zr-note zr-center', text: hintParts.join(' · ') }),
+			].filter(Boolean));
 
 			if (editingField === 'front') {
 				frontEl.focus();

@@ -44,7 +44,12 @@ function createMockDOM() {
 		}
 		append(...nodes) {
 			for (let n of nodes) {
-				if (n === null || n === undefined) continue;
+				if (n === null || n === undefined) {
+					let child = doc.createTextNode(String(n));
+					child.parentNode = this;
+					this.childNodes.push(child);
+					continue;
+				}
 				let child = typeof n === 'string' ? doc.createTextNode(n) : n;
 				if (child.parentNode) child.remove();
 				child.parentNode = this;
@@ -907,6 +912,7 @@ test('review QoL: always front+back without flip/tooltip, right-click inline edi
 	UI.open(reader, 'preview');
 	let popup = doc.getElementById('zotrecall-popup');
 	assert.ok(popup);
+	assert.equal(popup.textContent.includes('null'), false, 'popup must not contain raw null text');
 
 	// 1. Both Front (.zr-card-q) and Back (.zr-card-back) are immediately visible;
 	//    no "Clic o spazio per girare" tooltip, no "Modifica" button, no "Gira"/"Domanda" button.
