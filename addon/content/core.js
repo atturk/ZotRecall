@@ -26,11 +26,84 @@ var ZotRecallCore = (function () {
 		{ name: 'gray', hex: '#aaaaaa' },
 	];
 
-	function hexToRGB(hex) {
-		let m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '').trim());
-		if (!m) return null;
-		let n = parseInt(m[1], 16);
-		return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+	function hexToRGB(color) {
+		let s = String(color || '').trim();
+		let m6 = /^#?([0-9a-f]{6})(?:[0-9a-f]{2})?$/i.exec(s);
+		if (m6) {
+			let n = parseInt(m6[1], 16);
+			return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+		}
+		let m3 = /^#?([0-9a-f]{3})(?:[0-9a-f])?$/i.exec(s);
+		if (m3) {
+			let [r, g, b] = m3[1].split('').map(c => parseInt(c + c, 16));
+			return [r, g, b];
+		}
+		let mRgb = /^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})/i.exec(s);
+		if (mRgb) {
+			return [
+				Math.min(255, parseInt(mRgb[1], 10)),
+				Math.min(255, parseInt(mRgb[2], 10)),
+				Math.min(255, parseInt(mRgb[3], 10)),
+			];
+		}
+		return null;
+	}
+
+	function rgbToHex([r, g, b]) {
+		return '#' + [r, g, b].map(x => Math.max(0, Math.min(255, x | 0)).toString(16).padStart(2, '0')).join('');
+	}
+
+	function normalizeColorHex(color) {
+		let rgb = hexToRGB(color);
+		return rgb ? rgbToHex(rgb) : String(color || '').trim();
+	}
+
+	function srgbToLinear(channel) {
+		let v = channel / 255;
+		return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+	}
+
+	function relativeLuminance([r, g, b]) {
+		return 0.2126 * srgbToLinear(r)
+			+ 0.7152 * srgbToLinear(g)
+			+ 0.0722 * srgbToLinear(b);
+	}
+
+	/**
+	 * WCAG-contrasting text color ('#000000' or '#ffffff') for a highlight
+	 * background color, so highlighted text remains legible in both light and
+	 * dark mode (Anki and Zotero) across all highlight colors.
+	 */
+	function highlightTextColor(color) {
+		let rgb = hexToRGB(color);
+		if (!rgb) return '#000000';
+		return relativeLuminance(rgb) > 0.179 ? '#000000' : '#ffffff';
+	}
+
+	function highlightStyle(color) {
+		let c = escapeHTML(color);
+		let fg = highlightTextColor(color);
+		return `background-color:${c};color:${fg};border-radius:2px;padding:0 2px`;
+	}
+
+	/**
+	 * Ensure every <span style="...background-color:..."> in an HTML snippet
+	 * carries an explicit contrasting text color, border-radius and padding.
+	 */
+	function ensureHighlightContrast(html) {
+		return String(html || '').replace(/<span\b([^>]*?)\bstyle="([^"]*)"([^>]*)>/gi, (full, before, style, after) => {
+			let m = /(?:^|;)\s*background(?:-color)?\s*:\s*([^;]+)/i.exec(style);
+			if (!m) return full;
+			let bg = m[1].trim();
+			if (!bg || bg === 'transparent' || /rgba\(.*,\s*0\s*\)/i.test(bg)) return full;
+			let fg = highlightTextColor(bg);
+			let props = style
+				.split(';')
+				.map(p => p.trim())
+				.filter(p => p && !/^(color|border-radius|padding)\s*:/i.test(p));
+			props.push(`color:${fg}`, 'border-radius:2px', 'padding:0 2px');
+			return `<span${before}style="${props.join(';')}"${after}>`;
+		});
 	}
 
 	function rgbToHSL([r, g, b]) {
@@ -603,38 +676,91 @@ var ZotRecallCore = (function () {
 		if (!Array.isArray(store.review.merges)) store.review.merges = [];
 		if (!Array.isArray(store.review.excluded)) store.review.excluded = [];
 		if (!store.review.extend || typeof store.review.extend !== 'object') store.review.extend = {};
+		if (!store.review.edits || typeof store.review.edits !== 'object') store.review.edits = {};
 		return store.review;
 	}
 
+	function normalizeEditedUnit(rawText, rawSpans, defaultColor = '#ffd400') {
+		let { text, spans } = normalizeWithSpans(String(rawText || ''), Array.isArray(rawSpans) ? rawSpans : []);
+		let sorted = spans
+			.map(s => ({ start: s.start, end: s.end, color: normalizeColorHex(s.color || defaultColor) }))
+			.filter(s => s.end > s.start)
+			.sort((a, b) => a.start - b.start || a.end - b.end);
+		let merged = [];
+		for (let s of sorted) {
+			let last = merged[merged.length - 1];
+			if (last && s.start <= last.end && last.color === s.color) {
+				last.end = Math.max(last.end, s.end);
+			}
+			else if (last && s.start < last.end) {
+				if (s.end > last.end) {
+					merged.push({ start: last.end, end: s.end, color: s.color });
+				}
+			}
+			else {
+				merged.push({ ...s });
+			}
+		}
+		if (text && !merged.length) {
+			merged.push({ start: 0, end: text.length, color: normalizeColorHex(defaultColor) });
+		}
+		return { text, spans: merged };
+	}
+
 	/**
-	 * Group the current sentences into review units, in document order.
-	 * A unit is a single sentence or a user-made merge of several.
-	 * @returns {Array<{id, keys, sentences, excluded, merged}>}
+	 * Save a manual edit ({text, spans, defaultColor}) for a unit identified
+	 * by `keys`. Passing null or empty text removes the manual edit.
+	 */
+	function setUnitEdit(store, keys, edit) {
+		let review = ensureReview(store);
+		let list = Array.isArray(keys) ? keys.filter(Boolean) : [keys].filter(Boolean);
+		if (!list.length) return false;
+		for (let k of list) delete review.edits[k];
+		if (!edit || !String(edit.text || '').trim()) return true;
+		let norm = normalizeEditedUnit(edit.text, edit.spans, edit.defaultColor || '#ffd400');
+		if (!norm.text) return false;
+		review.edits[list[0]] = {
+			text: norm.text,
+			spans: norm.spans,
+			keys: list.slice(),
+		};
+		return true;
+	}
+
+	function clearUnitEdit(store, keys) {
+		return setUnitEdit(store, keys, null);
+	}
+
+	/**
+	 * Group the current sentences into review units.
+	 * A unit is a single sentence or a user-made merge of several (in the
+	 * exact order the user selected them when merging).
+	 * @returns {Array<{id, keys, sentences, renderSentences, edited, excluded, merged, before, after}>}
 	 */
 	function buildUnits(sentences, store) {
 		let review = ensureReview(store);
-		let present = new Set(sentences.map(s => s.key));
+		let byKey = new Map(sentences.map(s => [s.key, s]));
 		let mergeOf = new Map();
 		for (let m of review.merges) {
-			let keys = m.filter(k => present.has(k));
+			let keys = m.filter(k => byKey.has(k));
 			if (keys.length < 2) continue;
-			for (let k of keys) mergeOf.set(k, m);
+			for (let k of keys) mergeOf.set(k, keys);
 		}
 		let excluded = new Set(review.excluded);
 		let units = [];
-		let byMerge = new Map();
+		let emittedMerges = new Set();
 		for (let s of sentences) {
 			let m = mergeOf.get(s.key);
 			if (m) {
-				let unit = byMerge.get(m);
-				if (unit) {
-					unit.keys.push(s.key);
-					unit.sentences.push(s);
-					continue;
-				}
-				unit = { id: 'm:' + s.key, keys: [s.key], sentences: [s], merged: true };
-				byMerge.set(m, unit);
-				units.push(unit);
+				if (emittedMerges.has(m)) continue;
+				if (s.key !== m[0]) continue;
+				emittedMerges.add(m);
+				units.push({
+					id: 'm:' + m[0],
+					keys: m.slice(),
+					sentences: m.map(k => byKey.get(k)),
+					merged: true,
+				});
 			}
 			else {
 				units.push({ id: s.key, keys: [s.key], sentences: [s], merged: false });
@@ -648,6 +774,38 @@ var ZotRecallCore = (function () {
 			let na = Math.min((review.extend[last.key] || {}).after || 0, (last.after || []).length);
 			u.before = nb ? first.before.slice(-nb) : [];
 			u.after = na ? last.after.slice(0, na) : [];
+
+			let renderSentences = [];
+			let covered = new Set();
+			let edited = false;
+			for (let s of u.sentences) {
+				if (covered.has(s.key)) continue;
+				let ed = review.edits[s.key];
+				if (ed && typeof ed.text === 'string' && Array.isArray(ed.spans)) {
+					edited = true;
+					if (Array.isArray(ed.keys)) ed.keys.forEach(k => covered.add(k));
+					covered.add(s.key);
+					renderSentences.push({
+						key: s.key,
+						text: ed.text,
+						spans: ed.spans.map(sp => ({ start: sp.start, end: sp.end, color: sp.color })),
+						pageIndex: s.pageIndex,
+						section: s.section,
+					});
+				}
+				else {
+					covered.add(s.key);
+					renderSentences.push({
+						key: s.key,
+						text: s.text,
+						spans: s.spans,
+						pageIndex: s.pageIndex,
+						section: s.section,
+					});
+				}
+			}
+			u.edited = edited;
+			u.renderSentences = renderSentences;
 		}
 		return units;
 	}
@@ -680,17 +838,31 @@ var ZotRecallCore = (function () {
 		for (let k of keys) delete review.extend[k];
 	}
 
-	/** Merge the given sentence keys (and any merge they already belong to) into one unit. */
+	/**
+	 * Merge the given sentence keys (and any merge they already belong to) into
+	 * one unit, preserving the exact selection order of `keys`.
+	 */
 	function mergeKeys(store, keys) {
 		let review = ensureReview(store);
-		let all = new Set(keys);
-		let rest = [];
-		for (let m of review.merges) {
-			if (m.some(k => all.has(k))) m.forEach(k => all.add(k));
-			else rest.push(m);
+		let inputSet = new Set(keys);
+		let matchingMerges = review.merges.filter(m => m.some(k => inputSet.has(k)));
+		let rest = review.merges.filter(m => !m.some(k => inputSet.has(k)));
+		let ordered = [];
+		let seen = new Set();
+		let add = (k) => {
+			if (k && !seen.has(k)) {
+				seen.add(k);
+				ordered.push(k);
+			}
+		};
+		for (let k of keys) {
+			add(k);
+			for (let m of matchingMerges) {
+				if (m.includes(k)) m.forEach(add);
+			}
 		}
-		if (all.size < 2) return false;
-		rest.push(Array.from(all));
+		if (ordered.length < 2) return false;
+		rest.push(ordered);
 		review.merges = rest;
 		return true;
 	}
@@ -701,6 +873,11 @@ var ZotRecallCore = (function () {
 		let set = new Set(keys);
 		let before = review.merges.length;
 		review.merges = review.merges.filter(m => !m.some(k => set.has(k)));
+		for (let [k, ed] of Object.entries(review.edits)) {
+			if (Array.isArray(ed.keys) && ed.keys.length > 1 && ed.keys.some(x => set.has(x))) {
+				delete review.edits[k];
+			}
+		}
 		return review.merges.length !== before;
 	}
 
@@ -728,21 +905,34 @@ var ZotRecallCore = (function () {
 	function classify(sentences, store) {
 		let out = { fresh: [], unchanged: [], changed: [], discarded: [] };
 		let current = new Map(sentences.map(s => [s.key, s.fingerprint]));
-		// A card is changed when the highlighting of any of its sentences changed,
-		// so all sentences of a merged card are regenerated together
-		let cardChanged = c => c.sentenceKeys.some(k => current.has(k)
-			&& (!c.fingerprints || c.fingerprints[k] !== current.get(k)));
-		// A sentence the user merged after its cards were made counts as changed
-		// Same for context sentences added or removed after generation
+		// A sentence the user merged, re-ordered, or manually edited after its
+		// cards were made counts as changed; same for context sentences added/removed
 		let unitOf = new Map();
 		let ctxOf = new Map();
 		for (let u of buildUnits(sentences, store)) {
 			if (u.merged) u.keys.forEach(k => unitOf.set(k, u.keys));
 			let ctx = unitContext(u);
 			u.keys.forEach(k => ctxOf.set(k, JSON.stringify(ctx[k] || [0, 0])));
+			if (u.edited) {
+				let editSig = hash(JSON.stringify(u.renderSentences.map(r => [r.text, r.spans])));
+				for (let s of u.sentences) {
+					current.set(s.key, hash(s.fingerprint + '|edit:' + editSig));
+				}
+			}
 		}
+		let cardChanged = c => c.sentenceKeys.some(k => current.has(k)
+			&& (!c.fingerprints || c.fingerprints[k] !== current.get(k)));
+		let hasSubsequenceInOrder = (arr, sub) => {
+			let pos = -1;
+			for (let k of sub) {
+				let next = arr.indexOf(k, pos + 1);
+				if (next === -1) return false;
+				pos = next;
+			}
+			return true;
+		};
 		let mergeChanged = (c, key) => (unitOf.has(key)
-			&& !unitOf.get(key).every(k => c.sentenceKeys.includes(k)))
+			&& !hasSubsequenceInOrder(c.sentenceKeys, unitOf.get(key)))
 			|| JSON.stringify((c.context || {})[key] || [0, 0]) !== ctxOf.get(key);
 		for (let s of sentences) {
 			let cards = store.cards.filter(c => c.sentenceKeys.includes(s.key));
@@ -805,17 +995,32 @@ var ZotRecallCore = (function () {
 		let context = {};
 		for (let u of group.units || []) Object.assign(context, unitContext(u));
 		let unitOfKey = new Map();
-		for (let u of group.units || []) u.keys.forEach(k => unitOfKey.set(k, u));
+		let renderOfKey = new Map();
+		let fpOfKey = new Map();
+		for (let s of group.sentences) fpOfKey.set(s.key, s.fingerprint);
+		for (let u of group.units || []) {
+			let editSig = u.edited ? hash(JSON.stringify((u.renderSentences || []).map(r => [r.text, r.spans]))) : '';
+			let rMap = new Map((u.renderSentences || u.sentences).map(r => [r.key, r]));
+			for (let s of u.sentences) {
+				unitOfKey.set(s.key, u);
+				renderOfKey.set(s.key, rMap.get(s.key) || { text: '', spans: [] });
+				if (editSig) fpOfKey.set(s.key, hash(s.fingerprint + '|edit:' + editSig));
+			}
+		}
 		for (let s of group.sentences) {
 			let u = unitOfKey.get(s.key);
+			let rs = renderOfKey.get(s.key) || s;
+			let lastRenderKey = (u && u.renderSentences && u.renderSentences.length)
+				? u.renderSentences[u.renderSentences.length - 1].key
+				: (u ? u.keys[u.keys.length - 1] : null);
 			let entry = {
-				text: s.text,
-				spans: s.spans.map(({ start, end, color }) => ({ start, end, color })),
+				text: rs.text,
+				spans: (rs.spans || []).map(({ start, end, color }) => ({ start, end, color })),
 				pageIndex: s.pageIndex,
 				section: s.section,
 			};
 			if (u && u.keys[0] === s.key && u.before.length) entry.before = u.before.slice();
-			if (u && u.keys[u.keys.length - 1] === s.key && u.after.length) entry.after = u.after.slice();
+			if (u && lastRenderKey === s.key && u.after.length) entry.after = u.after.slice();
 			store.sentences[s.key] = entry;
 		}
 		let added = [];
@@ -825,7 +1030,7 @@ var ZotRecallCore = (function () {
 			if (!sentenceKeys.length) continue;
 			let fingerprints = {};
 			for (let k of sentenceKeys) {
-				fingerprints[k] = group.sentences.find(s => s.key === k).fingerprint;
+				fingerprints[k] = fpOfKey.get(k) || group.sentences.find(s => s.key === k).fingerprint;
 			}
 			for (let q of r.questions) {
 				let cardContext = {};
@@ -835,6 +1040,7 @@ var ZotRecallCore = (function () {
 					sentenceKeys,
 					context: cardContext,
 					question: q,
+					originalQuestion: q,
 					status: 'active',
 					edited: false,
 					fingerprints,
@@ -848,6 +1054,106 @@ var ZotRecallCore = (function () {
 			}
 		}
 		return added;
+	}
+
+	/**
+	 * Ensure store.sentences has the current text, spans and context for the
+	 * given unit(s), and return {sentenceKeys, context, fingerprints, pageIndex}.
+	 */
+	function storeUnitSentences(store, units) {
+		let unitList = Array.isArray(units) ? units : [units].filter(Boolean);
+		let sentenceKeys = [];
+		let context = {};
+		let fingerprints = {};
+		let pageIndex = 0;
+		let hasPage = false;
+		for (let u of unitList) {
+			if (!u || !Array.isArray(u.sentences) || !u.sentences.length) continue;
+			Object.assign(context, unitContext(u));
+			let editSig = u.edited ? hash(JSON.stringify((u.renderSentences || []).map(r => [r.text, r.spans]))) : '';
+			let rMap = new Map((u.renderSentences || u.sentences).map(r => [r.key, r]));
+			let lastRenderKey = (u.renderSentences && u.renderSentences.length)
+				? u.renderSentences[u.renderSentences.length - 1].key
+				: u.keys[u.keys.length - 1];
+			for (let s of u.sentences) {
+				if (!sentenceKeys.includes(s.key)) sentenceKeys.push(s.key);
+				fingerprints[s.key] = editSig ? hash(s.fingerprint + '|edit:' + editSig) : s.fingerprint;
+				let rs = rMap.get(s.key) || s;
+				let entry = {
+					text: rs.text,
+					spans: (rs.spans || []).map(({ start, end, color }) => ({ start, end, color })),
+					pageIndex: s.pageIndex,
+					section: s.section,
+				};
+				if (u.keys[0] === s.key && u.before && u.before.length) entry.before = u.before.slice();
+				if (lastRenderKey === s.key && u.after && u.after.length) entry.after = u.after.slice();
+				store.sentences[s.key] = entry;
+				if (!hasPage) {
+					pageIndex = s.pageIndex ?? 0;
+					hasPage = true;
+				}
+			}
+		}
+		return { sentenceKeys, context, fingerprints, pageIndex };
+	}
+
+	/**
+	 * Create a manual card for the given unit(s), populating store.sentences so
+	 * backHTML(store, card) renders the period with highlights immediately.
+	 */
+	function createManualCard(store, units, question = '') {
+		let { sentenceKeys, context, fingerprints, pageIndex } = storeUnitSentences(store, units);
+		if (!sentenceKeys.length) return null;
+		let cardContext = {};
+		for (let k of sentenceKeys) if (context[k]) cardContext[k] = context[k];
+		let qText = String(question || '').trim();
+		let card = {
+			id: newCardID(),
+			sentenceKeys,
+			context: cardContext,
+			question: qText,
+			originalQuestion: qText,
+			status: 'active',
+			edited: false,
+			manual: true,
+			fingerprints,
+			pageIndex,
+			model: 'manual',
+			createdAt: new Date().toISOString(),
+			ankiNoteId: null,
+		};
+		store.cards.push(card);
+		return card;
+	}
+
+	/**
+	 * Create a manual card linked to the same period as the given source card.
+	 */
+	function createManualCardFromSource(store, sourceCard, question = '') {
+		if (!sourceCard || !Array.isArray(sourceCard.sentenceKeys) || !sourceCard.sentenceKeys.length) return null;
+		let sentenceKeys = sourceCard.sentenceKeys.slice();
+		let context = Object.assign({}, sourceCard.context || {});
+		let fingerprints = Object.assign({}, sourceCard.fingerprints || {});
+		let pageIndex = sourceCard.pageIndex ?? 0;
+		let qText = String(question || '').trim();
+		let card = {
+			id: newCardID(),
+			sentenceKeys,
+			context,
+			question: qText,
+			originalQuestion: qText,
+			status: 'active',
+			edited: false,
+			manual: true,
+			fingerprints,
+			pageIndex,
+			model: 'manual',
+			createdAt: new Date().toISOString(),
+			ankiNoteId: null,
+		};
+		if (sourceCard.back) card.back = sourceCard.back;
+		store.cards.push(card);
+		return card;
 	}
 
 	function activeCards(store) {
@@ -866,13 +1172,174 @@ var ZotRecallCore = (function () {
 		return card;
 	}
 
-	function editCard(store, cardID, question) {
+	/**
+	 * Edit a card. `back` is sanitized HTML for the back, or null to go back
+	 * to the source sentence(s) built by the code. `front` is optional sanitized
+	 * HTML for the front (question) when formatted, or null for plain text.
+	 */
+	function editCard(store, cardID, question, back, front) {
 		let card = store.cards.find(c => c.id === cardID);
 		if (card) {
-			card.question = String(question).trim();
+			if (card.originalQuestion === undefined) card.originalQuestion = card.question;
+			if (question !== undefined && question !== null) card.question = String(question).trim();
+			if (back !== undefined) {
+				if (back === null || !String(back).trim()) delete card.back;
+				else card.back = String(back);
+			}
+			if (front !== undefined) {
+				let f = front === null ? '' : String(front).trim();
+				if (!f || f === escapeHTML(card.question)) delete card.front;
+				else card.front = f;
+			}
 			card.edited = true;
 		}
 		return card;
+	}
+
+	// ------------------------------------------------------------------
+	// Keyboard shortcuts normalization and matching
+	// ------------------------------------------------------------------
+
+	const DEFAULT_SHORTCUTS = {
+		exclude: 'e',
+		edit: 'm',
+		manualCard: 'g',
+		newCard: 'n',
+		send: 'Enter',
+		discard: '-',
+	};
+
+	function normalizeShortcutKey(v, def) {
+		if (typeof v !== 'string') return def;
+		let k = v.trim();
+		if (!k) return def;
+		if (/^(enter|invio)$/i.test(k)) return 'Enter';
+		if (/^(space|spazio)$/i.test(k)) return ' ';
+		if (/^(backspace)$/i.test(k)) return 'Backspace';
+		if (/^(delete|canc)$/i.test(k)) return 'Delete';
+		return k.slice(0, 1).toLowerCase();
+	}
+
+	function shortcutDisplayLabel(k) {
+		if (!k) return '';
+		if (k === 'Enter' || /^(enter|invio)$/i.test(k)) return 'Invio';
+		if (k === ' ' || /^(space|spazio)$/i.test(k)) return 'Spazio';
+		if (k === 'Backspace' || /^backspace$/i.test(k)) return '⌫';
+		if (k === 'Delete' || /^(delete|canc)$/i.test(k)) return 'Canc';
+		return String(k).toUpperCase();
+	}
+
+	function matchesShortcut(eventKey, configuredKey) {
+		if (!eventKey || !configuredKey) return false;
+		if (configuredKey === 'Enter' || /^(enter|invio)$/i.test(configuredKey)) return eventKey === 'Enter';
+		if (configuredKey === ' ' || /^(space|spazio)$/i.test(configuredKey)) return eventKey === ' ';
+		if (configuredKey === 'Backspace' || /^backspace$/i.test(configuredKey)) return eventKey === 'Backspace';
+		if (configuredKey === 'Delete' || /^(delete|canc)$/i.test(configuredKey)) return eventKey === 'Delete';
+		if (configuredKey.length === 1) return String(eventKey).toLowerCase() === configuredKey.toLowerCase();
+		return String(eventKey).toLowerCase() === String(configuredKey).toLowerCase();
+	}
+
+	// ------------------------------------------------------------------
+	// Anki sync state
+	// ------------------------------------------------------------------
+
+	/** Anki tags from user text: space separated, "::" for hierarchy. */
+	function parseTags(text) {
+		return [...new Set(String(text || '').split(/\s+/).map(t => t.trim()).filter(Boolean))];
+	}
+
+	/** What Anki would receive for this card; changes when front, back or tags change. */
+	function ankiSignature(store, card, tags = []) {
+		return hash(frontHTML(card) + '\u0001' + backHTML(store, card) + '\u0001' + [...tags].sort().join(' '));
+	}
+
+	/**
+	 * 'new': never sent; 'sent': Anki has exactly this card;
+	 * 'changed': sent, but edited or regenerated since.
+	 */
+	function ankiState(store, card, tags = []) {
+		if (!card.ankiNoteId) return 'new';
+		return card.ankiSig === ankiSignature(store, card, tags) ? 'sent' : 'changed';
+	}
+
+	function markSent(store, card, { noteId, deck, tags = [] }) {
+		card.ankiNoteId = noteId;
+		card.ankiDeck = deck;
+		card.ankiSig = ankiSignature(store, card, tags);
+		card.sentAt = new Date().toISOString();
+	}
+
+	function sentCards(store) {
+		return activeCards(store).filter(c => c.ankiNoteId);
+	}
+
+	function unsentCards(store, tags = []) {
+		return activeCards(store).filter(c => ankiState(store, c, tags) !== 'sent');
+	}
+
+	/** Active cards associated with a review unit (or an array of sentence keys). */
+	function unitCards(store, unitOrKeys) {
+		let keys = Array.isArray(unitOrKeys) ? unitOrKeys : (unitOrKeys && Array.isArray(unitOrKeys.keys) ? unitOrKeys.keys : []);
+		if (!keys.length) return [];
+		let keySet = new Set(keys);
+		return activeCards(store).filter(c => Array.isArray(c.sentenceKeys) && c.sentenceKeys.some(k => keySet.has(k)));
+	}
+
+	/**
+	 * Select the subset of cards and starting index for the preview window:
+	 * - When opened from a sidebar period badge ({cardIDs, sentenceKeys, cardID}),
+	 *   returns strictly the active cards of that period (even if already sent to Anki),
+	 *   never mixing in unsent cards from other periods.
+	 * - When opened from "Carte inviate ad Anki" ({fromSent: true, cardID}),
+	 *   returns all sent cards starting at cardID.
+	 * - When opened normally (start = number or undefined), returns only unsent cards.
+	 */
+	function selectPreviewCards(store, tags = [], start = 0) {
+		let fromSent = Boolean(start && typeof start === 'object' && start.fromSent);
+		let unitCardIDs = (start && typeof start === 'object' && Array.isArray(start.cardIDs) && start.cardIDs.length)
+			? start.cardIDs
+			: null;
+		let unitSentenceKeys = (start && typeof start === 'object' && Array.isArray(start.sentenceKeys) && start.sentenceKeys.length)
+			? start.sentenceKeys
+			: null;
+		let allActive = activeCards(store);
+		let initialCards;
+		if (unitCardIDs) {
+			let idSet = new Set(unitCardIDs);
+			initialCards = allActive.filter(c => idSet.has(c.id));
+		}
+		else if (unitSentenceKeys) {
+			initialCards = unitCards(store, unitSentenceKeys);
+		}
+		else if (fromSent) {
+			initialCards = sentCards(store);
+			if (start && typeof start === 'object' && start.cardID && !initialCards.some(c => c.id === start.cardID)) {
+				let target = allActive.find(c => c.id === start.cardID);
+				if (target) initialCards = [target, ...initialCards];
+			}
+		}
+		else if (start && typeof start === 'object' && start.cardID) {
+			let target = allActive.find(c => c.id === start.cardID);
+			if (target && Array.isArray(target.sentenceKeys) && target.sentenceKeys.length) {
+				initialCards = unitCards(store, target.sentenceKeys);
+			}
+			else {
+				initialCards = target ? [target] : [];
+			}
+		}
+		else {
+			initialCards = unsentCards(store, tags);
+		}
+		let index = typeof start === 'object' && start
+			? Math.max(0, initialCards.findIndex(c => c.id === start.cardID))
+			: Math.max(0, Math.min(Number(start) || 0, Math.max(0, initialCards.length - 1)));
+		return {
+			cards: initialCards,
+			index,
+			fromSent,
+			unitCardIDs,
+			unitSentenceKeys,
+		};
 	}
 
 	function deleteCard(store, cardID) {
@@ -918,7 +1385,7 @@ var ZotRecallCore = (function () {
 		for (let s of spans) {
 			if (s.start < pos) continue;
 			html += escapeHTML(sentence.text.slice(pos, s.start));
-			html += `<span style="background-color:${escapeHTML(s.color)}">`
+			html += `<span style="${highlightStyle(s.color)}">`
 				+ escapeHTML(sentence.text.slice(s.start, s.end)) + '</span>';
 			pos = s.end;
 		}
@@ -928,15 +1395,17 @@ var ZotRecallCore = (function () {
 
 	/** Back of a card: the source sentence(s), highlights in their original colors. */
 	function backHTML(store, card) {
+		if (card.back) return ensureHighlightContrast(card.back);
 		return card.sentenceKeys
 			.map(k => store.sentences[k])
-			.filter(Boolean)
-			.map(s => [...(s.before || []).map(escapeHTML), sentenceToHTML(s), ...(s.after || []).map(escapeHTML)].join(' '))
+			.filter(s => s && (s.text || (s.before && s.before.length) || (s.after && s.after.length)))
+			.map(s => [...(s.before || []).map(escapeHTML), s.text ? sentenceToHTML(s) : '', ...(s.after || []).map(escapeHTML)].filter(Boolean).join(' '))
 			.join('<br><br>');
 	}
 
 	function frontHTML(card) {
-		return escapeHTML(card.question);
+		if (card && card.front) return ensureHighlightContrast(card.front);
+		return escapeHTML(card ? card.question : '');
 	}
 
 	function csvField(s) {
@@ -986,9 +1455,10 @@ Return only JSON: {"groups":[{"sentence_ids":["..."],"questions":["..."]}],"skip
 
 	/** A merged unit becomes one <s> holding all its sentences. */
 	function unitToMarkup(unit, id) {
+		let list = unit.renderSentences || unit.sentences;
 		let inner = [
 			...(unit.before || []).map(escapeXMLText),
-			...unit.sentences.map(s => sentenceToMarkup(s, null)),
+			...list.map(s => sentenceToMarkup(s, null)),
 			...(unit.after || []).map(escapeXMLText),
 		].join(' ');
 		return unit.sentences.length > 1
@@ -1165,6 +1635,10 @@ Return only JSON: {"groups":[{"sentence_ids":["..."],"questions":["..."]}],"skip
 	return {
 		ZOTERO_COLORS,
 		colorName,
+		normalizeColorHex,
+		highlightTextColor,
+		highlightStyle,
+		ensureHighlightContrast,
 		hash,
 		decodeTextMap,
 		flattenDocument,
@@ -1175,6 +1649,9 @@ Return only JSON: {"groups":[{"sentence_ids":["..."],"questions":["..."]}],"skip
 		emptyStore,
 		classify,
 		ensureReview,
+		normalizeEditedUnit,
+		setUnitEdit,
+		clearUnitEdit,
 		buildUnits,
 		mergeKeys,
 		splitKeys,
@@ -1183,10 +1660,25 @@ Return only JSON: {"groups":[{"sentence_ids":["..."],"questions":["..."]}],"skip
 		clearExtend,
 		planGeneration,
 		applyResults,
+		storeUnitSentences,
+		createManualCard,
+		createManualCardFromSource,
 		activeCards,
 		discardedCards,
 		setCardStatus,
 		editCard,
+		DEFAULT_SHORTCUTS,
+		normalizeShortcutKey,
+		shortcutDisplayLabel,
+		matchesShortcut,
+		parseTags,
+		ankiSignature,
+		ankiState,
+		markSent,
+		sentCards,
+		unsentCards,
+		unitCards,
+		selectPreviewCards,
 		deleteCard,
 		emptyTrash,
 		orphanKeys,

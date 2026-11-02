@@ -191,13 +191,22 @@ test('generation lifecycle: fresh, unchanged, changed, discarded', () => {
 	assert.deepEqual(store.sentences, {});
 });
 
-test('back HTML keeps original highlight colors; CSV has two columns, no header', () => {
+test('back HTML keeps original highlight colors with contrasting text color; CSV has two columns, no header', () => {
 	let { sentences } = Core.extractFromDocument(makeDoc(), [ann('A4', P1B, '(ADP)', 1, 50, 700, '#ff6666')]);
 	let store = Core.emptyStore('X');
 	let [group] = Core.planGeneration(sentences, store);
 	Core.applyResults(store, group, [{ sentenceKeys: [sentences[0].key], questions: ['What does "ADP" stand for?'] }]);
 	let card = Core.activeCards(store)[0];
-	assert.ok(Core.backHTML(store, card).includes('<span style="background-color:#ff6666">(ADP)</span>'));
+	assert.ok(Core.backHTML(store, card).includes('<span style="background-color:#ff6666;color:#000000;border-radius:2px;padding:0 2px">(ADP)</span>'));
+	for (let c of Core.ZOTERO_COLORS) {
+		assert.equal(Core.highlightTextColor(c.hex), '#000000', `${c.name} uses dark text`);
+	}
+	assert.equal(Core.highlightTextColor('rgb(255, 212, 0)'), '#000000');
+	assert.equal(Core.highlightTextColor('#1e3a8a'), '#ffffff', 'dark custom color uses white text');
+	assert.equal(
+		Core.ensureHighlightContrast('<span style="background-color: rgb(255, 212, 0)">Hyperemia</span> and <span style="font-weight:bold">flow</span>'),
+		'<span style="background-color: rgb(255, 212, 0);color:#000000;border-radius:2px;padding:0 2px">Hyperemia</span> and <span style="font-weight:bold">flow</span>'
+	);
 	let csv = Core.toCSV(store);
 	assert.equal(csv.split('\r\n').filter(Boolean).length, 1);
 	assert.ok(csv.startsWith('"What does &quot;ADP&quot; stand for?","Dense (or δ) granules contain'));
@@ -289,3 +298,271 @@ test('review: include the previous or next non-highlighted sentence', () => {
 	assert.equal(Core.classify(sentences, store).changed.length, 1);
 	assert.equal(store.review.extend[s.key], undefined);
 });
+
+test('anki state: new, sent, changed after edit; tags parsing; edited back', () => {
+	let doc = makeDoc();
+	let a3 = ann('A3', P1B, 'Dense (or δ) granules', 1, 50, 700);
+	let store = Core.emptyStore('X');
+	let { sentences } = Core.extractFromDocument(doc, [a3]);
+	let [group] = Core.planGeneration(sentences, store);
+	let { idMap } = Core.buildMessages(group);
+	Core.applyResults(store, group, Core.parseResponse('{"groups":[{"sentence_ids":["s1"],"questions":["Q?"]}],"skipped":[]}', idMap).results);
+	let card = Core.activeCards(store)[0];
+	let tags = Core.parseTags('  patologia::emostasi  zotrecall patologia::emostasi ');
+	assert.deepEqual(tags, ['patologia::emostasi', 'zotrecall']);
+
+	assert.equal(Core.ankiState(store, card, tags), 'new');
+	assert.equal(Core.unsentCards(store, tags).length, 1);
+	Core.markSent(store, card, { noteId: 123, deck: 'A::B', tags });
+	assert.equal(Core.ankiState(store, card, tags), 'sent');
+	assert.equal(Core.unsentCards(store, tags).length, 0, 'sent card excluded from unsentCards');
+	assert.equal(Core.ankiState(store, card, [...tags].reverse()), 'sent', 'tag order does not matter');
+	assert.equal(Core.ankiState(store, card, []), 'changed', 'different tags');
+	assert.equal(Core.unsentCards(store, []).length, 1, 'card with changed tags included in unsentCards');
+
+	Core.editCard(store, card.id, null, '<b>Dense</b> granules');
+	assert.equal(Core.backHTML(store, card), '<b>Dense</b> granules');
+	assert.equal(card.question, 'Q?');
+	assert.equal(Core.ankiState(store, card, tags), 'changed');
+	assert.equal(Core.unsentCards(store, tags).length, 1, 'edited card included in unsentCards');
+	Core.editCard(store, card.id, null, null);
+	assert.ok(Core.backHTML(store, card).includes('background-color'), 'back restored');
+	assert.equal(Core.ankiState(store, card, tags), 'sent');
+	assert.equal(Core.unsentCards(store, tags).length, 0);
+});
+
+test('review: merge preserves selection order even when reverse of document order', () => {
+	let doc = makeDoc();
+	let a1 = ann('A1', P1A, 'disc-shaped', 0, 50, 600);
+	let a3 = ann('A3', P1B, 'Dense (or δ) granules', 1, 50, 700);
+	let store = Core.emptyStore('X');
+	let { sentences } = Core.extractFromDocument(doc, [a1, a3]);
+	let [sPage1, sPage2] = sentences.map(s => s.key);
+
+	// Select page 2 first, then page 1
+	assert.ok(Core.mergeKeys(store, [sPage2, sPage1]));
+	let units = Core.buildUnits(sentences, store);
+	assert.equal(units.length, 1);
+	assert.deepEqual(units[0].keys, [sPage2, sPage1]);
+	assert.equal(units[0].sentences[0].key, sPage2);
+	assert.equal(units[0].sentences[1].key, sPage1);
+
+	let [group] = Core.planGeneration(sentences, store);
+	let { messages, idMap } = Core.buildMessages(group);
+	assert.deepEqual(idMap.s1, [sPage2, sPage1]);
+	assert.ok(
+		messages[1].content.includes('<s id="s1" merged="true"><hl c="yellow">Dense (or δ) granules</hl> contain adenosine diphosphate (ADP), see Fig. 4.5 for details. Platelets are <hl c="yellow">disc-shaped</hl> anucleate cell fragments.</s>'),
+		'merged prompt follows selection order'
+	);
+
+	let { results } = Core.parseResponse('{"groups":[{"sentence_ids":["s1"],"questions":["Q?"]}],"skipped":[]}', idMap);
+	Core.applyResults(store, group, results);
+	let card = Core.activeCards(store)[0];
+	assert.deepEqual(card.sentenceKeys, [sPage2, sPage1]);
+	assert.ok(Core.backHTML(store, card).indexOf('Dense') < Core.backHTML(store, card).indexOf('disc-shaped'));
+	assert.equal(Core.planGeneration(sentences, store).length, 0);
+
+	// Re-merging in the opposite order marks existing cards as changed
+	assert.ok(Core.mergeKeys(store, [sPage1, sPage2]));
+	assert.equal(Core.classify(sentences, store).changed.length, 2);
+});
+
+test('review: manual unit editing persists in sidebar, goes to LLM, and marks cards changed', () => {
+	let doc = makeDoc();
+	let a3 = ann('A3', P1B, 'Dense (or δ) granules', 1, 50, 700);
+	let store = Core.emptyStore('X');
+	let { sentences } = Core.extractFromDocument(doc, [a3]);
+	let sKey = sentences[0].key;
+
+	assert.ok(Core.setUnitEdit(store, [sKey], {
+		text: 'Dense granules store ADP and serotonin.',
+		spans: [
+			{ start: 0, end: 14, color: '#ffd400' },
+			{ start: 21, end: 38, color: '#5fb236' },
+		],
+	}));
+
+	let [unit] = Core.buildUnits(sentences, store);
+	assert.equal(unit.edited, true);
+	assert.equal(unit.renderSentences.length, 1);
+	assert.equal(unit.renderSentences[0].text, 'Dense granules store ADP and serotonin.');
+
+	let [group] = Core.planGeneration(sentences, store);
+	let { messages, idMap } = Core.buildMessages(group);
+	assert.ok(messages[1].content.includes('<s id="s1"><hl c="yellow">Dense granules</hl> store <hl c="green">ADP and serotonin</hl>.</s>'));
+
+	let { results } = Core.parseResponse('{"groups":[{"sentence_ids":["s1"],"questions":["What do dense granules store?"]}],"skipped":[]}', idMap);
+	Core.applyResults(store, group, results);
+	let card = Core.activeCards(store)[0];
+	assert.ok(Core.backHTML(store, card).includes('ADP and serotonin'));
+	assert.equal(Core.planGeneration(sentences, store).length, 0);
+
+	// Editing the unit text again marks the sentence as changed
+	Core.setUnitEdit(store, [sKey], {
+		text: 'Dense granules store ADP, ATP, and serotonin.',
+		spans: [{ start: 0, end: 14, color: '#ffd400' }],
+	});
+	assert.equal(Core.classify(sentences, store).changed.length, 1);
+
+	// Restoring original unit removes the edit
+	Core.clearUnitEdit(store, [sKey]);
+	let [restored] = Core.buildUnits(sentences, store);
+	assert.equal(restored.edited, false);
+	assert.equal(restored.renderSentences[0].text, sentences[0].text);
+});
+
+test('preview subset selection: period badge isolates strictly that period cards (1, 2, or 3 cards, sent or unsent)', () => {
+	let doc = makeDoc();
+	let a1 = ann('A1', P1A, 'disc-shaped', 0, 50, 600);
+	let a2 = ann('A2', P1A, 'α-Granules', 0, 50, 600);
+	let a3 = ann('A3', P1B, 'Dense (or δ) granules', 1, 50, 700);
+	let store = Core.emptyStore('X');
+	let { sentences } = Core.extractFromDocument(doc, [a1, a2, a3]);
+	let [s1, s2, s3] = sentences.map(s => s.key);
+	let tags = ['robbins::cap-4'];
+
+	let [group] = Core.planGeneration(sentences, store);
+	let { idMap } = Core.buildMessages(group);
+	// Period 1 -> 1 card; Period 2 -> 3 cards; Period 3 -> 2 cards
+	let reply = JSON.stringify({
+		groups: [
+			{ sentence_ids: ['s1'], questions: ['Q1-only?'] },
+			{ sentence_ids: ['s2'], questions: ['Q2-a?', 'Q2-b?', 'Q2-c?'] },
+			{ sentence_ids: ['s3'], questions: ['Q3-a?', 'Q3-b?'] },
+		],
+		skipped: [],
+	});
+	Core.applyResults(store, group, Core.parseResponse(reply, idMap).results);
+	let units = Core.buildUnits(sentences, store);
+	let [u1, u2, u3] = units;
+
+	assert.equal(Core.unitCards(store, u1).length, 1);
+	assert.equal(Core.unitCards(store, u2).length, 3);
+	assert.equal(Core.unitCards(store, u3).length, 2);
+
+	// Mark all 3 cards of period 2 and the 1 card of period 1 as sent to Anki;
+	// keep the 2 cards of period 3 unsent.
+	for (let c of Core.unitCards(store, u1)) Core.markSent(store, c, { noteId: 10, deck: 'Med', tags });
+	for (let c of Core.unitCards(store, u2)) Core.markSent(store, c, { noteId: 20, deck: 'Med', tags });
+
+	// 1. General preview (no period filter) shows only the 2 unsent cards of period 3
+	let general = Core.selectPreviewCards(store, tags, 0);
+	assert.deepEqual(general.cards.map(c => c.question), ['Q3-a?', 'Q3-b?']);
+	assert.equal(general.index, 0);
+
+	// 2. Clicking "1 carta" on period 1 (already sent) must show ONLY that 1 card (1 di 1),
+	//    NEVER mixing in the 2 unsent cards from period 3!
+	let u1Cards = Core.unitCards(store, u1);
+	let selU1 = Core.selectPreviewCards(store, tags, {
+		cardIDs: u1Cards.map(c => c.id),
+		sentenceKeys: u1.keys,
+		cardID: u1Cards[0].id,
+	});
+	assert.deepEqual(selU1.cards.map(c => c.question), ['Q1-only?']);
+	assert.equal(selU1.index, 0);
+
+	// 3. Clicking "3 carte" on period 2 (all 3 already sent) must show ALL 3 cards of period 2 (1 di 3 .. 3 di 3),
+	//    neither collapsing to 1 di 1 nor mixing in period 3's unsent cards!
+	let u2Cards = Core.unitCards(store, u2);
+	let selU2 = Core.selectPreviewCards(store, tags, {
+		cardIDs: u2Cards.map(c => c.id),
+		sentenceKeys: u2.keys,
+		cardID: u2Cards[0].id,
+	});
+	assert.deepEqual(selU2.cards.map(c => c.question), ['Q2-a?', 'Q2-b?', 'Q2-c?']);
+	assert.equal(selU2.index, 0);
+
+	// Also works when only sentenceKeys + cardID are passed
+	let selU2ByKeys = Core.selectPreviewCards(store, tags, {
+		sentenceKeys: u2.keys,
+		cardID: u2Cards[1].id,
+	});
+	assert.deepEqual(selU2ByKeys.cards.map(c => c.question), ['Q2-a?', 'Q2-b?', 'Q2-c?']);
+	assert.equal(selU2ByKeys.index, 1);
+
+	// 4. When a period has 1 sent card and 2 unsent cards, clicking its badge shows all 3 and starts on the first unsent
+	let u2SecondCard = u2Cards[1];
+	Core.editCard(store, u2SecondCard.id, 'Q2-b edited?', null); // now 'changed' (unsent)
+	let unsentSet = new Set(Core.unsentCards(store, tags).map(c => c.id));
+	let firstUnsent = u2Cards.find(c => unsentSet.has(c.id));
+	assert.equal(firstUnsent.id, u2SecondCard.id);
+	let selMixed = Core.selectPreviewCards(store, tags, {
+		cardIDs: u2Cards.map(c => c.id),
+		sentenceKeys: u2.keys,
+		cardID: firstUnsent.id,
+	});
+	assert.equal(selMixed.cards.length, 3);
+	assert.equal(selMixed.index, 1, 'starts at first unsent card of the period');
+
+	// 5. Opening from "Carte inviate ad Anki" (fromSent: true) shows all sent cards
+	let fromSent = Core.selectPreviewCards(store, tags, { fromSent: true, cardID: u2Cards[2].id });
+	assert.equal(fromSent.cards.length, 4);
+	assert.equal(fromSent.cards[fromSent.index].id, u2Cards[2].id);
+});
+
+test('manual card creation, formatted front HTML with lists, and shortcut helpers', () => {
+	let doc = makeDoc();
+	let a1 = ann('A1', P1A, 'disc-shaped', 0, 50, 600);
+	let store = Core.emptyStore('X');
+	let { sentences } = Core.extractFromDocument(doc, [a1]);
+	let units = Core.buildUnits(sentences, store);
+
+	// 1. createManualCard creates an active card with the period sentences already in the store
+	let manualCard = Core.createManualCard(store, units, 'Qual è la forma delle piastrine?');
+	assert.ok(manualCard);
+	assert.equal(manualCard.status, 'active');
+	assert.equal(manualCard.manual, true);
+	assert.deepEqual(manualCard.sentenceKeys, units[0].keys);
+	assert.ok(Core.backHTML(store, manualCard).includes('disc-shaped'));
+	assert.equal(Core.unitCards(store, units[0]).length, 1);
+
+	// 2. editCard supports formatted front HTML (e.g. bulleted/numbered lists and bold)
+	Core.editCard(
+		store,
+		manualCard.id,
+		'Quali sono i tipi di granuli?',
+		undefined,
+		'Quali sono i tipi di granuli?<ul><li><b>Alfa</b></li><li><i>Densi</i></li></ul>'
+	);
+	assert.equal(manualCard.originalQuestion, 'Qual è la forma delle piastrine?');
+	assert.equal(manualCard.question, 'Quali sono i tipi di granuli?');
+	assert.equal(
+		Core.frontHTML(manualCard),
+		'Quali sono i tipi di granuli?<ul><li><b>Alfa</b></li><li><i>Densi</i></li></ul>'
+	);
+
+	// Resetting front to plain text removes card.front
+	Core.editCard(store, manualCard.id, 'Domanda semplice?', undefined, null);
+	assert.equal(manualCard.front, undefined);
+	assert.equal(Core.frontHTML(manualCard), 'Domanda semplice?');
+
+	// 3. Shortcut helpers normalize and match Enter/Invio, '-', and single letters
+	assert.equal(Core.normalizeShortcutKey('invio', 'Enter'), 'Enter');
+	assert.equal(Core.normalizeShortcutKey('Enter', 'Enter'), 'Enter');
+	assert.equal(Core.normalizeShortcutKey('-', '-'), '-');
+	assert.equal(Core.normalizeShortcutKey('G', 'g'), 'g');
+	assert.equal(Core.shortcutDisplayLabel('Enter'), 'Invio');
+	assert.equal(Core.shortcutDisplayLabel('-'), '-');
+	assert.equal(Core.shortcutDisplayLabel('g'), 'G');
+	assert.equal(Core.matchesShortcut('Enter', 'Enter'), true);
+	assert.equal(Core.matchesShortcut('Enter', 'Invio'), true);
+	assert.equal(Core.matchesShortcut('-', '-'), true);
+	assert.equal(Core.matchesShortcut('g', 'G'), true);
+	assert.equal(Core.matchesShortcut('G', 'g'), true);
+	assert.equal(Core.matchesShortcut('a', 'g'), false);
+
+	// 4. createManualCardFromSource creates a new manual card linked to the same period as sourceCard
+	let cardFromSource = Core.createManualCardFromSource(store, manualCard, 'Seconda domanda sulle piastrine?');
+	assert.ok(cardFromSource);
+	assert.notEqual(cardFromSource.id, manualCard.id);
+	assert.deepEqual(cardFromSource.sentenceKeys, manualCard.sentenceKeys);
+	assert.equal(cardFromSource.manual, true);
+	assert.equal(cardFromSource.question, 'Seconda domanda sulle piastrine?');
+	assert.ok(Core.backHTML(store, cardFromSource).includes('disc-shaped'));
+	assert.equal(Core.DEFAULT_SHORTCUTS.newCard, 'n');
+	assert.equal(Core.matchesShortcut('n', Core.DEFAULT_SHORTCUTS.newCard), true);
+	assert.equal(Core.matchesShortcut('N', Core.DEFAULT_SHORTCUTS.newCard), true);
+});
+
+
+

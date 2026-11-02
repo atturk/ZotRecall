@@ -1,6 +1,6 @@
 {
   "name": "zotrecall",
-  "version": "0.5.1",
+  "version": "0.6.9",
   "private": true,
   "description": "Zotero plugin: recall questions (Anki cards) from PDF highlights",
   "scripts": {

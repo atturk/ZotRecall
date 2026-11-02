@@ -9,3 +9,5 @@ pref("extensions.zotrecall.ankiKey", "");
 pref("extensions.zotrecall.lastDeck", "");
 pref("extensions.zotrecall.lastModel", "");
 pref("extensions.zotrecall.lastFields", "[]");
+pref("extensions.zotrecall.ankiTags", "");
+pref("extensions.zotrecall.closeOnOutsideClick", false);

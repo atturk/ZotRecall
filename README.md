@@ -7,7 +7,9 @@ Plugin per Zotero 10 che trasforma le evidenziazioni dei PDF in domande di recal
 1. Scarica il file `zotrecall-<versione>.xpi`.
 2. In Zotero apri Strumenti → Plugin.
 3. Clicca la rotellina in alto a destra, scegli "Install Plugin From File…" e seleziona il file.
-4. Apri un PDF. Il bottone di ZotRecall compare nella barra in alto a destra del lettore (se il PDF era già aperto, chiudi la scheda e riaprila).
+4. Apri un PDF. Nella barra laterale sinistra del lettore compare la scheda ZotRecall. Le altre funzioni sono nel menu Strumenti → ZotRecall.
+
+Gli aggiornamenti arrivano da soli (Plugin → rotellina → "Check for Updates" per averli subito).
 
 ## Come funziona
 
@@ -29,11 +31,23 @@ Nella barra laterale sinistra del lettore, accanto a miniature, annotazioni e in
 
 La barra laterale del lettore non ha un'API per i plugin, quindi la scheda viene aggiunta direttamente all'interfaccia. Se una versione futura di Zotero la cambia, la scheda può sparire, ma il resto del plugin continua a funzionare dal bottone in alto.
 
+## Anteprima e invio ad Anki
+
+"Anteprima e invio" (dalla barra laterale o da Strumenti → ZotRecall) è la sessione di controllo: scorri le carte con ← →, giri con spazio, modifichi domanda e risposta (grassetto, corsivo, sottolineato, evidenziatore nei colori di Zotero), scarti, e invii ogni carta ad Anki con "Invia".
+
+- Una carta inviata mostra "Inviata ✓" e non viene mandata di nuovo. Se la modifichi o la rigeneri dopo l'invio, il bottone diventa "Aggiorna" e aggiorna la nota già in Anki invece di crearne una nuova.
+- Mazzo, tipo di nota, campi e tag predefiniti si scelgono in Strumenti → ZotRecall → Mazzo Anki. Il mazzo si sceglie dall'elenco o si scrive come percorso ("Mazzo genitore::Mazzo figlio"); se non esiste, viene creato.
+- "Esporta o invia in blocco" invia tutte le carte nuove o cambiate e salta quelle già identiche in Anki; da lì si salva anche il CSV.
+- "Carte inviate ad Anki" elenca cosa è già in Anki e cosa è cambiato da allora.
+
+Le finestre si aprono al centro, si spostano trascinando la barra del titolo e si ridimensionano dall'angolo in basso a destra. Si chiudono con ✕ o Esc (o cliccando fuori, se lo attivi nelle impostazioni).
+
 ## Sviluppo
 
 ```sh
 npm test          # test della logica (Node 22+, nessuna dipendenza)
 npm run build     # crea build/zotrecall-<versione>.xpi
+scripts/publish.sh  # pubblica l'xpi come aggiornamento automatico (branch releases + updates.json su main)
 ```
 
 Struttura:
