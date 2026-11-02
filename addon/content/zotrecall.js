@@ -164,6 +164,7 @@ var ZotRecall = {
 				exclude: normKey(rawShortcuts.exclude, defs.exclude),
 				edit: normKey(rawShortcuts.edit, defs.edit),
 				manualCard: normKey(rawShortcuts.manualCard, defs.manualCard),
+				newCard: normKey(rawShortcuts.newCard, defs.newCard),
 				send: normKey(rawShortcuts.send, defs.send),
 				discard: normKey(rawShortcuts.discard, defs.discard),
 			},
@@ -188,6 +189,7 @@ var ZotRecall = {
 				exclude: normKey(s.shortcuts.exclude, defs.exclude),
 				edit: normKey(s.shortcuts.edit, defs.edit),
 				manualCard: normKey(s.shortcuts.manualCard, defs.manualCard),
+				newCard: normKey(s.shortcuts.newCard, defs.newCard),
 				send: normKey(s.shortcuts.send, defs.send),
 				discard: normKey(s.shortcuts.discard, defs.discard),
 			}));

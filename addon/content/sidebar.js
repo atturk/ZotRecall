@@ -113,6 +113,7 @@ var ZotRecallSidebar = {
 		let state = this._states.get(doc);
 		let container = doc.getElementById('sidebarContainer');
 		if (!state || !container) return;
+		if (state.active) return;
 		let reader = state.reader;
 		try {
 			if (reader._internalReader && !reader._internalReader._state.sidebarOpen) {
@@ -140,7 +141,7 @@ var ZotRecallSidebar = {
 		state.observer.observe(start, { subtree: true, attributes: true, attributeFilter: ['class'] });
 		state.scrolled = false;
 		state.signature = null;
-		this.render(doc);
+		return this.render(doc);
 	},
 
 	deactivate(doc) {
@@ -188,7 +189,7 @@ var ZotRecallSidebar = {
 	},
 
 	/** Select and scroll into view the period(s) linked to the given card when the sidebar is open. */
-	highlightCardUnit(doc, card) {
+	highlightCardUnit(doc, card, { center = false } = {}) {
 		let state = this._states.get(doc);
 		if (!state || !state.active || !card || !Array.isArray(card.sentenceKeys) || !card.sentenceKeys.length) return;
 		let keySet = new Set(card.sentenceKeys);
@@ -199,7 +200,28 @@ var ZotRecallSidebar = {
 		this.updateSelection(doc);
 		let view = doc.getElementById('zotrecall-sidebar-view');
 		let el = view && Array.from(view.querySelectorAll('.zr-sb-unit')).find(node => node.getAttribute('data-unit') === matching[0].id);
-		if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
+		if (el && el.scrollIntoView) el.scrollIntoView({ block: center ? 'center' : 'nearest' });
+	},
+
+	/**
+	 * Activate the sidebar if needed, highlight and center the period,
+	 * and navigate the reader to it.
+	 */
+	async focusCardUnit(doc, card) {
+		let state = this._states.get(doc);
+		if (!state) return;
+		if (!state.active) {
+			this.activate(doc);
+		}
+		if (!state.units || !state.units.length) {
+			await this.render(doc);
+		}
+		this.highlightCardUnit(doc, card, { center: true });
+		let keySet = new Set((card && card.sentenceKeys) || []);
+		let matching = (state.units || []).find(u => u.keys && u.keys.some(k => keySet.has(k)));
+		if (matching) {
+			this.goTo(doc, matching);
+		}
 	},
 
 	// ------------------------------------------------------------------

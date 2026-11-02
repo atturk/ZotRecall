@@ -252,8 +252,13 @@ function createMockDOM() {
 			return selector.split(',').some((part) => {
 				let s = part.trim();
 				if (!s) return false;
-				if (s === '[contenteditable="true"]') return this.getAttribute('contenteditable') === 'true';
-				if (s === '[contenteditable]') return this.hasAttribute('contenteditable');
+				let attrMatch = s.match(/\[([a-zA-Z0-9_-]+)(?:=["']([^"']*)["'])?\]/);
+				if (attrMatch) {
+					let [, attr, val] = attrMatch;
+					if (val === undefined ? !this.hasAttribute(attr) : this.getAttribute(attr) !== val) return false;
+					s = s.replace(attrMatch[0], '');
+					if (!s) return true;
+				}
 				if (s.startsWith('#')) return this.id === s.slice(1);
 				if (s.startsWith('.')) {
 					let classes = s.slice(1).split('.');
@@ -308,8 +313,9 @@ function createMockDOM() {
 		focus() {
 			doc.activeElement = this;
 		}
-		scrollIntoView() {
+		scrollIntoView(options) {
 			this._scrolledIntoView = true;
+			this._scrollIntoViewOptions = options;
 		}
 		click() {
 			this.dispatchEvent(makeEvent('click'));
@@ -419,6 +425,12 @@ function createMockDOM() {
 		},
 		removeEventListener(type, fn, capture = false) {
 			removeListener(this, type, fn, capture);
+		},
+		execCommand(cmd, showUI = false, value = null) {
+			this._executedCommands = this._executedCommands || [];
+			this._executedCommands.push({ cmd, showUI, value });
+			if (cmd === 'insertUnorderedList' || cmd === 'insertOrderedList') return false;
+			return true;
 		},
 		dispatchEvent(event) {
 			let list = (listenersByTarget.get(this) || []).slice();
@@ -909,21 +921,44 @@ test('review QoL: always front+back without flip/tooltip, right-click inline edi
 	assert.ok(!buttonTexts.includes('Gira'), 'Gira button removed');
 	assert.ok(!buttonTexts.includes('Domanda'), 'Domanda button removed');
 	assert.ok(buttonTexts.includes('Scarta'), 'Scarta button present in normal review');
+	assert.ok(buttonTexts.includes('Nuova'), 'Nuova button present in normal review');
 	assert.ok(buttonTexts.includes('Invia'), 'Invia button present');
 
-	// Sidebar automatically selected the period corresponding to card 1 (period 1)
-	let sbState = Sidebar._states.get(doc);
-	assert.deepEqual(Array.from(sbState.selected), [sentences[0].key], 'sidebar auto-selected current card period');
+	// Period link exists to the left of page link in meta row
+	let metaLinks = popup.querySelectorAll('.zr-meta-links .zr-link');
+	assert.equal(metaLinks.length, 2, 'period link and page link present');
+	assert.equal(metaLinks[0].textContent, 'periodo', 'period link is first (to the left)');
+	assert.ok(metaLinks[1].textContent.startsWith('pag.'), 'page link is second (to the right)');
 
-	// 2. Right-clicking Front enters inline edit mode with the compact shared toolbar (including bulleted & numbered lists)
+	// Clicking "periodo" highlights and centers the period in the sidebar
+	let sbState = Sidebar._states.get(doc);
+	metaLinks[0].click();
+	await new Promise(r => setImmediate(r));
+	assert.deepEqual(Array.from(sbState.selected), [sentences[0].key], 'sidebar period highlighted');
+	let unitNode = doc.getElementById('zotrecall-sidebar-view').querySelector(`.zr-sb-unit[data-unit="${sentences[0].key}"]`);
+	assert.ok(unitNode && unitNode._scrollIntoViewOptions?.block === 'center', 'period centered in sidebar');
+
+	// 2. Double-clicking Front enters inline edit mode; right-click does NOT
 	frontEl.dispatchEvent(makeEvent('contextmenu', { target: frontEl }));
+	await new Promise(r => setImmediate(r));
+	assert.equal(popup.querySelector('.zr-compact-toolbar'), null, 'right-click does not enter inline edit mode');
+
+	frontEl.dispatchEvent(makeEvent('dblclick', { target: frontEl }));
 	await new Promise(r => setImmediate(r));
 	frontEl = popup.querySelector('.zr-card-q');
 	let toolbar = popup.querySelector('.zr-compact-toolbar');
-	assert.ok(toolbar, 'compact toolbar appears on right-click');
+	assert.ok(toolbar, 'compact toolbar appears on double-click');
 	assert.equal(toolbar.querySelector('.zr-toolbar-badge').textContent, 'Fronte');
 	assert.equal(frontEl.getAttribute('contenteditable'), 'true');
 	assert.equal(frontEl.classList.contains('zr-field-editing'), true);
+
+	// Test formatting shortcuts: Cmd+B, Cmd+I, Cmd+U
+	doc._executedCommands = [];
+	frontEl.dispatchEvent(makeEvent('keydown', { key: 'b', metaKey: true, target: frontEl }));
+	frontEl.dispatchEvent(makeEvent('keydown', { key: 'i', metaKey: true, target: frontEl }));
+	frontEl.dispatchEvent(makeEvent('keydown', { key: 'u', metaKey: true, target: frontEl }));
+	let cmds = (doc._executedCommands || []).map(c => c.cmd).filter(c => c !== 'styleWithCSS');
+	assert.deepEqual(cmds, ['bold', 'italic', 'underline'], 'Cmd+B, Cmd+I, Cmd+U triggered execCommand');
 
 	// While editing Front, pressing Enter or '-' must NEVER send or discard the card
 	let countBefore = Core.activeCards(store).length;
@@ -946,32 +981,50 @@ test('review QoL: always front+back without flip/tooltip, right-click inline edi
 	let card0 = Core.activeCards(store)[0];
 	assert.ok(card0.front && card0.front.includes('<ul><li>Punto A</li><li>Punto B</li></ul>'), 'formatted front persisted on card');
 
-	// 3. Right-clicking Back enters inline edit mode for Back with the same compact toolbar
+	// 3. Double-clicking Back enters inline edit mode for Back with the same compact toolbar
 	backEl = popup.querySelector('.zr-card-back');
-	backEl.dispatchEvent(makeEvent('contextmenu', { target: backEl }));
+	backEl.dispatchEvent(makeEvent('dblclick', { target: backEl }));
 	await new Promise(r => setImmediate(r));
 	toolbar = popup.querySelector('.zr-compact-toolbar');
-	assert.ok(toolbar, 'compact toolbar appears for Back');
+	assert.ok(toolbar, 'compact toolbar appears for Back on double-click');
 	assert.equal(toolbar.querySelector('.zr-toolbar-badge').textContent, 'Retro');
 	backEl = popup.querySelector('.zr-card-back');
 	backEl.dispatchEvent(makeEvent('keydown', { key: 'Escape', target: backEl }));
 	await new Promise(r => setImmediate(r));
 
-	// 4. Pressing Enter (outside editable fields) sends card 1 to Anki AND automatically advances to card 2 (2 di 6)
-	assert.ok(popup.querySelector('.zr-meta-row').textContent.startsWith('1 di 6 '));
+	// 4. Pressing shortcut 'n' creates a new card with the same period and focuses Front
+	doc.dispatchEvent(makeEvent('keydown', { key: 'n', target: doc.body }));
+	await new Promise(r => setImmediate(r));
+	assert.equal(popup._zrEditing, true, 'entered editing mode for new card');
+	frontEl = popup.querySelector('.zr-card-q');
+	assert.equal(frontEl.textContent, '', 'new card has empty question');
+	backEl = popup.querySelector('.zr-card-back');
+	assert.ok(backEl.textContent.includes('Edema'), 'new card has the same period back');
+
+	// Type question and commit via Escape
+	frontEl.textContent = 'Nuova domanda piastrine?';
+	frontEl.dispatchEvent(makeEvent('keydown', { key: 'Escape', target: frontEl }));
+	await new Promise(r => setImmediate(r));
+	let allActiveCards = Core.activeCards(store);
+	let newCreated = allActiveCards.find(c => c.question === 'Nuova domanda piastrine?');
+	assert.ok(newCreated, 'new manual card created from review was persisted');
+	assert.deepEqual(newCreated.sentenceKeys, card0.sentenceKeys, 'new card has the exact same period sentenceKeys');
+
+	// We are currently on the newly created card (2 di 7)
+	assert.ok(popup.querySelector('.zr-meta-row').textContent.startsWith('2 di 7 '));
 	doc.dispatchEvent(makeEvent('keydown', { key: 'Enter', target: doc.body }));
 	await new Promise(r => setImmediate(r));
 	await new Promise(r => setImmediate(r));
-	assert.equal(sentCardIDs.length, 1, 'Enter shortcut sent card 1 to Anki');
-	assert.ok(popup.querySelector('.zr-meta-row').textContent.startsWith('2 di 6 '), 'automatically advanced to card 2 after sending');
-	// And sidebar auto-selected period 2 (linked to card 2)
-	assert.deepEqual(Array.from(sbState.selected), [sentences[1].key], 'sidebar auto-selected period 2 when advancing to card 2');
+	assert.equal(sentCardIDs.length, 1, 'Enter shortcut sent new card to Anki');
+	assert.ok(popup.querySelector('.zr-meta-row').textContent.startsWith('3 di 7 '), 'automatically advanced to card 3 after sending');
+	// And sidebar auto-selected period 2 (linked to card 3)
+	assert.deepEqual(Array.from(sbState.selected), [sentences[1].key], 'sidebar auto-selected period 2 when advancing');
 
-	// 5. Pressing '-' discards the current card (card 2)
+	// 5. Pressing '-' discards the current card (card 3)
 	doc.dispatchEvent(makeEvent('keydown', { key: '-', target: doc.body }));
 	await new Promise(r => setImmediate(r));
 	assert.equal(Core.discardedCards(store).length, 1, '"-" shortcut discarded current card');
-	assert.ok(popup.querySelector('.zr-meta-row').textContent.startsWith('2 di 5 '), 'remaining session cards updated to 5');
+	assert.ok(popup.querySelector('.zr-meta-row').textContent.startsWith('3 di 6 '), 'remaining session cards updated to 6');
 });
 
 test('sidebar immediate refresh after generation and manual card creation (shortcut G) with no Scarta button', async () => {

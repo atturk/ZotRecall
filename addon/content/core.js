@@ -1126,6 +1126,36 @@ var ZotRecallCore = (function () {
 		return card;
 	}
 
+	/**
+	 * Create a manual card linked to the same period as the given source card.
+	 */
+	function createManualCardFromSource(store, sourceCard, question = '') {
+		if (!sourceCard || !Array.isArray(sourceCard.sentenceKeys) || !sourceCard.sentenceKeys.length) return null;
+		let sentenceKeys = sourceCard.sentenceKeys.slice();
+		let context = Object.assign({}, sourceCard.context || {});
+		let fingerprints = Object.assign({}, sourceCard.fingerprints || {});
+		let pageIndex = sourceCard.pageIndex ?? 0;
+		let qText = String(question || '').trim();
+		let card = {
+			id: newCardID(),
+			sentenceKeys,
+			context,
+			question: qText,
+			originalQuestion: qText,
+			status: 'active',
+			edited: false,
+			manual: true,
+			fingerprints,
+			pageIndex,
+			model: 'manual',
+			createdAt: new Date().toISOString(),
+			ankiNoteId: null,
+		};
+		if (sourceCard.back) card.back = sourceCard.back;
+		store.cards.push(card);
+		return card;
+	}
+
 	function activeCards(store) {
 		return store.cards
 			.filter(c => c.status === 'active')
@@ -1174,6 +1204,7 @@ var ZotRecallCore = (function () {
 		exclude: 'e',
 		edit: 'm',
 		manualCard: 'g',
+		newCard: 'n',
 		send: 'Enter',
 		discard: '-',
 	};
@@ -1631,6 +1662,7 @@ Return only JSON: {"groups":[{"sentence_ids":["..."],"questions":["..."]}],"skip
 		applyResults,
 		storeUnitSentences,
 		createManualCard,
+		createManualCardFromSource,
 		activeCards,
 		discardedCards,
 		setCardStatus,

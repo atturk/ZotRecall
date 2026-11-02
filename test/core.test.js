@@ -550,6 +550,18 @@ test('manual card creation, formatted front HTML with lists, and shortcut helper
 	assert.equal(Core.matchesShortcut('g', 'G'), true);
 	assert.equal(Core.matchesShortcut('G', 'g'), true);
 	assert.equal(Core.matchesShortcut('a', 'g'), false);
+
+	// 4. createManualCardFromSource creates a new manual card linked to the same period as sourceCard
+	let cardFromSource = Core.createManualCardFromSource(store, manualCard, 'Seconda domanda sulle piastrine?');
+	assert.ok(cardFromSource);
+	assert.notEqual(cardFromSource.id, manualCard.id);
+	assert.deepEqual(cardFromSource.sentenceKeys, manualCard.sentenceKeys);
+	assert.equal(cardFromSource.manual, true);
+	assert.equal(cardFromSource.question, 'Seconda domanda sulle piastrine?');
+	assert.ok(Core.backHTML(store, cardFromSource).includes('disc-shaped'));
+	assert.equal(Core.DEFAULT_SHORTCUTS.newCard, 'n');
+	assert.equal(Core.matchesShortcut('n', Core.DEFAULT_SHORTCUTS.newCard), true);
+	assert.equal(Core.matchesShortcut('N', Core.DEFAULT_SHORTCUTS.newCard), true);
 });
 
 
