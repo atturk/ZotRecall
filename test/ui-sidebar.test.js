@@ -951,6 +951,8 @@ test('review QoL: always front+back without flip/tooltip, right-click inline edi
 	assert.equal(toolbar.querySelector('.zr-toolbar-badge').textContent, 'Fronte');
 	assert.equal(frontEl.getAttribute('contenteditable'), 'true');
 	assert.equal(frontEl.classList.contains('zr-field-editing'), true);
+	assert.equal(popup.querySelector('.zr-card').contains(toolbar), false, 'toolbar is rendered outside the card box so the card does not move');
+	assert.ok(popup.querySelector('.zr-body').contains(toolbar), 'toolbar is rendered below the card in preview body');
 
 	// Test formatting shortcuts: Cmd+B, Cmd+I, Cmd+U
 	doc._executedCommands = [];

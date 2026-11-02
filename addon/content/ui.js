@@ -156,11 +156,10 @@ var ZotRecallUI = {
 .zr-link { border: 0; background: none; color: var(--zr-accent); cursor: pointer; font: inherit; padding: 0; }
 .zr-card { border: 1px solid var(--zr-border); border-radius: 10px; padding: 18px 16px; min-height: 140px; cursor: default; outline: none; }
 .zr-card:focus-visible { box-shadow: 0 0 0 2px var(--zr-accent); }
-.zr-card-q { font-size: 15px; font-weight: 600; text-align: center; cursor: text; min-height: 22px; }
+.zr-card-q { font-size: 15px; font-weight: 600; text-align: left; cursor: text; min-height: 22px; padding: 6px 8px; border-radius: 6px; border: 2px solid transparent; box-sizing: border-box; }
 .zr-card-q:empty::before { content: attr(data-placeholder); color: var(--zr-muted); font-weight: 400; }
-.zr-card-back { margin-top: 14px; padding-top: 10px; border-top: 1px dashed var(--zr-border); cursor: text; }
-.zr-card-q.zr-field-editing, .zr-card-back.zr-field-editing { outline: 2px solid var(--zr-accent); border-radius: 6px; padding: 6px 8px; background: var(--zr-field); cursor: text; }
-.zr-card-q.zr-field-editing { text-align: left; }
+.zr-card-back { margin-top: 10px; padding: 6px 8px; border-top: 1px dashed var(--zr-border); cursor: text; border-radius: 6px; border: 2px solid transparent; box-sizing: border-box; }
+.zr-card-q.zr-field-editing, .zr-card-back.zr-field-editing { border-color: var(--zr-accent); background: var(--zr-field); outline: none; }
 .zr-btn.zr-danger { color: var(--zr-danger); }
 .zr-tag { display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 8px; background: var(--zr-hover); font-size: 10px; }
 .zr-tag-warn { background: #fde8c8; color: #8a5300; }
@@ -184,7 +183,7 @@ var ZotRecallUI = {
 .zr-rich li { margin: 2px 0; }
 .zr-rich-wrap { border: 1px solid var(--zr-border); border-radius: 6px; background: var(--zr-field); }
 .zr-toolbar { display: flex; align-items: center; gap: 2px; padding: 3px 4px; border-bottom: 1px solid var(--zr-border); flex-wrap: wrap; }
-.zr-toolbar.zr-compact-toolbar { margin-bottom: 10px; padding: 2px 5px; border: 1px solid var(--zr-border); border-radius: 6px; background: var(--zr-field); }
+.zr-toolbar.zr-compact-toolbar { margin-top: 8px; margin-bottom: 0; padding: 2px 5px; border: 1px solid var(--zr-border); border-radius: 6px; background: var(--zr-field); }
 .zr-toolbar-badge { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--zr-muted); padding: 0 6px 0 2px; border-right: 1px solid var(--zr-border); margin-right: 2px; user-select: none; }
 .zr-tool { min-width: 24px; height: 24px; padding: 0 5px; border: 0; border-radius: 4px; background: none; color: var(--zr-fg); font: 13px/24px Georgia, serif; cursor: pointer; }
 .zr-tool:hover { background: var(--zr-hover); }
@@ -787,6 +786,13 @@ var ZotRecallUI = {
 		let currentBackEl = null;
 		let currentToolbarEl = null;
 
+		body.addEventListener('mousedown', (e) => {
+			if (!editingField) return;
+			let activeEl = editingField === 'front' ? currentFrontEl : currentBackEl;
+			if ((activeEl && activeEl.contains(e.target)) || (currentToolbarEl && currentToolbarEl.contains(e.target))) return;
+			commitFieldEdit(true);
+		});
+
 		let deckLink = h(doc, 'button', {
 			class: 'zr-link zr-deck-link',
 			title: 'Mazzo, tipo di nota e tag usati da "Invia"',
@@ -1105,15 +1111,8 @@ var ZotRecallUI = {
 			}
 
 			let face = h(doc, 'div', { class: 'zr-card', tabindex: '0' },
-				toolbarNode,
 				frontEl,
 				backEl);
-			face.addEventListener('mousedown', (e) => {
-				if (!editingField) return;
-				let activeEl = editingField === 'front' ? frontEl : backEl;
-				if ((activeEl && activeEl.contains(e.target)) || (toolbarNode && toolbarNode.contains(e.target))) return;
-				commitFieldEdit(true);
-			});
 
 			let periodLink = h(doc, 'button', {
 				class: 'zr-link',
@@ -1197,6 +1196,7 @@ var ZotRecallUI = {
 					h(doc, 'span', {}, `${index + 1} di ${cards.length} `, ...badges),
 					metaLinks),
 				face,
+				toolbarNode,
 				actions,
 				message,
 				h(doc, 'p', { class: 'zr-note zr-center', text: hintParts.join(' · ') }));
